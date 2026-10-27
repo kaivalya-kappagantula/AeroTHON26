@@ -618,7 +618,6 @@ class BcdRedZoneMission(Node):
             # ATTITUDE + GLOBAL_POSITION_INT feed the red-zone projection:
             # 20 Hz halves the telemetry gaps (runtime request, not a param)
             mav.request_message_intervals(self, (30, 33), rate_hz=20.0)
-            mav.check_throttle_cap(self)    # background: MOT_SPIN_MAX is set on the FC
             if not self._acquire_home():
                 self._result = False
                 return

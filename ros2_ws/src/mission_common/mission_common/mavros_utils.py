@@ -196,54 +196,6 @@ def set_fcu_param(node: Node, name: str, value, timeout: float = 5.0) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# check_throttle_cap — the motor output ceiling, checked without delaying
-# ---------------------------------------------------------------------------
-# MOT_SPIN_MAX is the fraction of the ESC output range at which thrust
-# saturates, so it caps motor output in every mode (GUIDED, pilot, failsafe).
-# Was 0.95. It is stored ON THE FC (Mission Planner: Config -> Full Parameter
-# List -> MOT_SPIN_MAX = 0.80 -> Write Params), not written by the code:
-# MAVROS only reads or writes an FC parameter after pulling the whole list
-# (~25 s over the serial link), and waiting for that delayed every start.
-THROTTLE_CAP_PARAM = "MOT_SPIN_MAX"
-THROTTLE_CAP = 0.80
-
-
-def check_throttle_cap(node: Node, load_wait: float = 120.0) -> None:
-    """Check MOT_SPIN_MAX == THROTTLE_CAP in the background; returns at once.
-
-    Logs the result once MAVROS has the FC's parameter list (it is read from
-    /mavros/param, where MAVROS mirrors the FC parameters). Never writes it."""
-    import threading
-    from rcl_interfaces.srv import GetParameters
-
-    def run():
-        deadline = time.time() + load_wait
-        while time.time() < deadline:
-            req = GetParameters.Request(names=[THROTTLE_CAP_PARAM])
-            res = _call_service(node, GetParameters, "/mavros/param/get_parameters", req,
-                                timeout=5.0)
-            v = res.values[0] if res is not None and res.values else None
-            if v is not None and v.type in (2, 3):          # integer / double
-                got = float(v.double_value if v.type == 3 else v.integer_value)
-                if abs(got - THROTTLE_CAP) < 1e-3:
-                    node.get_logger().info(
-                        f"[mavros_utils] Throttle cap on the FC: {THROTTLE_CAP_PARAM} = "
-                        f"{got:.2f} (confirmed)")
-                else:
-                    node.get_logger().error(
-                        f"[mavros_utils] {THROTTLE_CAP_PARAM} on the FC is {got:.2f}, not "
-                        f"{THROTTLE_CAP:.2f} — set it in Mission Planner (Full Parameter "
-                        f"List) and Write Params")
-                return
-            time.sleep(2.0)
-        node.get_logger().warn(
-            f"[mavros_utils] Could not read {THROTTLE_CAP_PARAM} from the FC in "
-            f"{load_wait:.0f} s — check it in Mission Planner")
-
-    threading.Thread(target=run, daemon=True).start()
-
-
-# ---------------------------------------------------------------------------
 # request_message_intervals — make ArduPilot stream what we subscribe to
 # ---------------------------------------------------------------------------
 def request_message_intervals(node: Node, message_ids=MISSION_STREAMS,

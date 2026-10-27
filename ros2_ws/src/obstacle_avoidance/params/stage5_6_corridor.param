@@ -34,5 +34,3 @@ AVOID_BEHAVE     1
 # finished. Land (5) sets down in place, recoverable. (The spec's 'Brake'
 # option does not exist on Copter FS_GCS_ENABLE.)
 FS_GCS_ENABLE    5
-# Throttle cap: motor output ceiling for every flight (was 0.95).
-MOT_SPIN_MAX     0.80

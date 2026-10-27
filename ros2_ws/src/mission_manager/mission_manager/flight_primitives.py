@@ -245,7 +245,6 @@ class FlightPrimitives(Node):
                 return
             # --no-mavproxy: we must request our own data streams.
             mav.request_message_intervals(self, (33, 32))  # GLOBAL_POSITION_INT, LOCAL_POSITION_NED
-            mav.check_throttle_cap(self)    # background: MOT_SPIN_MAX is set on the FC
             if not self._acquire_home():
                 self._finish(False)
                 return

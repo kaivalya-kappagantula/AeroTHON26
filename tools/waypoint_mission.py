@@ -53,11 +53,6 @@ DEFAULT_WAYPOINTS = [  # 2 m square at 1 m, forward/right of takeoff
     (0.0, 0.0, 1.0),
 ]
 
-# Motor output ceiling, written before every arm. MOT_SPIN_MAX caps output in
-# every mode; was 0.95. Same value as mission_common.mavros_utils.THROTTLE_CAP.
-THROTTLE_CAP_PARAM = "MOT_SPIN_MAX"
-THROTTLE_CAP = 0.80
-
 STREAMS_HZ = {  # requested explicitly (no MAVProxy to do it for us)
     mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED: 10,
     mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE: 10,
@@ -93,7 +88,6 @@ class Vehicle:
 
         self.mode = None
         self.armed = False
-        self.params = {}
         self.pos = None          # (n, e, d) local NED, metres
         self.vel = (0.0, 0.0, 0.0)  # (vn, ve, vd) m/s
         self.yaw = None          # radians
@@ -152,8 +146,6 @@ class Vehicle:
             self.gps_fix = msg.fix_type
             self.gps_sats = msg.satellites_visible
             self.gps_hdop = msg.eph / 100.0 if msg.eph != 65535 else None
-        elif t == "PARAM_VALUE":
-            self.params[msg.param_id.strip("\x00")] = msg.param_value
         elif t == "STATUSTEXT":
             print(f"[fc] {msg.text}")
 
@@ -177,22 +169,6 @@ class Vehicle:
                 self.log(f"mode={name}")
                 return
         raise MissionAbort(f"could not enter {name} (current: {self.mode})")
-
-    def apply_throttle_cap(self, timeout=5):
-        """Write THROTTLE_CAP to MOT_SPIN_MAX and wait for the FC to echo it."""
-        self.params.pop(THROTTLE_CAP_PARAM, None)
-        end = time.time() + timeout
-        while time.time() < end:
-            self.m.mav.param_set_send(self.m.target_system, self.m.target_component,
-                                      THROTTLE_CAP_PARAM.encode(), THROTTLE_CAP,
-                                      mavutil.mavlink.MAV_PARAM_TYPE_REAL32)
-            self.pump(1.0)
-            got = self.params.get(THROTTLE_CAP_PARAM)
-            if got is not None and abs(got - THROTTLE_CAP) < 1e-3:
-                self.log(f"throttle cap {THROTTLE_CAP_PARAM}={THROTTLE_CAP:.2f}")
-                return
-        raise MissionAbort(f"throttle cap not confirmed ({THROTTLE_CAP_PARAM} = "
-                           f"{self.params.get(THROTTLE_CAP_PARAM)}) — refusing to fly")
 
     def arm(self, timeout=10):
         end = time.time() + timeout
@@ -309,7 +285,6 @@ class Mission:
           3. slide the altitude target up to --takeoff-alt at --climb-rate."""
         v, alt = self.v, self.a.takeoff_alt
         first = min(self.a.liftoff_alt, alt)
-        v.apply_throttle_cap()
         v.set_mode("GUIDED")
         v.arm()
 
