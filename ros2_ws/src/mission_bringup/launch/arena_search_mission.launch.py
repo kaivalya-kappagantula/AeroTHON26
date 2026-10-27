@@ -37,9 +37,11 @@
 #                   with scan_ref:=true (read in this flight).
 #   rc_switch       true = wait for the RC CH7 switch to start
 #   cam_yaw         Cam3 image-top direction vs the nose, deg clockwise
-#   lens_pos        Cam3 manual focus, dioptres = 1 / distance (m): 0.4 =
-#                   2.5 m, sharp from ~2 to ~3 m. Check on the ground first:
-#                   rpicam-still -n --autofocus-mode manual --lens-position 0.4 -o t.jpg
+#   lens_pos        Cam3 manual focus at start-up, dioptres = 1 / distance (m).
+#                   In flight the mission sets it per phase: 1/ref_alt for the
+#                   reference QR, 1/alt for the sweep (3 m -> 0.33, 2 m -> 0.5).
+#                   Check on the ground first:
+#                   rpicam-still -n --autofocus-mode manual --lens-position 0.33 -o t.jpg
 #   awb_mode/af_mode  Cam3 white balance (5 = daylight: keeps red stable) /
 #                   autofocus (2 = continuous)
 #   sim             true = SITL: no camera_ros; sim_down_camera_node renders

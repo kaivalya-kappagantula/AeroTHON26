@@ -125,6 +125,11 @@ class ArenaSearchMission(MissionNode):
             self._wait_for_start()
             self.sm.auto_activate()
             self._preflight()
+            # Fixed focus for the first altitude flown (the reference's, or
+            # the sweep's); the sweep sets its own before it starts.
+            scan_first = bool(self._p("arena_test_scan_reference"))
+            self._focus_camera(float(self.cfg.cruise_altitude_m) if scan_first
+                               else float(self.cfg.arena_alt_m))
             arena_alt = float(self.cfg.arena_alt_m)
             # Reading the reference: take off to its altitude (ref_alt; the
             # sweep then goes straight down/up to arena_alt). Else the lower.
@@ -153,6 +158,7 @@ class ArenaSearchMission(MissionNode):
             self.sm.qr_scanned()
             self.sm.entry_complete()        # no corridor in this sequence
             corners = None if self._p("arena_test_use_config") else self._test_corners()
+            self._focus_camera(float(self.cfg.arena_alt_m))     # sweep: QRs + red
             found = self.arena.run(corners)
 
             if found is not None:

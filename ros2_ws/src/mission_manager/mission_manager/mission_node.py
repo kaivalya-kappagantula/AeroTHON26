@@ -529,6 +529,40 @@ class MissionNode(Node):
             return None
         return math.radians(90.0 - self.placed_heading_deg)
 
+    def _focus_camera(self, distance_m: float):
+        """Fixed focus of the downward Cam3 (camera_ros node 'camera') for
+        the ground distance_m below: LensPosition = 1 / distance (dioptres).
+        Autofocus cannot work on this camera stack (libcamera: "PDAF data in
+        unsupported format"), so each phase sets the focus for its altitude.
+        No camera node (SITL) -> logged, carries on."""
+        from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+        from rcl_interfaces.srv import SetParameters
+        lens = 1.0 / max(float(distance_m), 0.1)
+        client = self.create_client(SetParameters, "/camera/set_parameters")
+        try:
+            if not client.wait_for_service(timeout_sec=1.0):
+                self.get_logger().info(
+                    f"[mission_node] No camera node — focus for {distance_m:.1f} m not set")
+                return
+            req = SetParameters.Request(parameters=[Parameter(
+                name="LensPosition",
+                value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=lens))])
+            future = client.call_async(req)
+            end = time.time() + 3.0
+            while not future.done() and time.time() < end:
+                time.sleep(0.05)
+            res = future.result() if future.done() else None
+            if res is not None and res.results and res.results[0].successful:
+                self.get_logger().info(
+                    f"[mission_node] Camera focus set for {distance_m:.1f} m "
+                    f"(LensPosition {lens:.2f})")
+            else:
+                reason = res.results[0].reason if res is not None and res.results else "no reply"
+                self.get_logger().warn(
+                    f"[mission_node] Camera focus for {distance_m:.1f} m NOT set: {reason}")
+        finally:
+            self.destroy_client(client)
+
     def _climb_in_place(self, alt: float, yaw_enu=None):
         """Climb (or descend) straight to alt where the vehicle is (the entry
         corridor ends holding at its measured altitude just past the walls;
