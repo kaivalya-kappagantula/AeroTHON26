@@ -3,6 +3,9 @@
 Autonomous mission stack for the AeroTHON 2026 drone: ROS 2 Jazzy on a Raspberry
 Pi 5, talking to an ArduPilot (ArduCopter) Pixhawk through MAVROS.
 
+**New to the project? Start with [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md)** — the
+mission, the architecture, how every phase works and why, testing, and what's open.
+
 | Phase | What it does | Status |
 |---|---|---|
 | 1 | Gradual takeoff to 5 m, find + centre over the reference QR, read it and store it (by its text, or by its picture if it holds none) | SITL ✅, drone not yet |
