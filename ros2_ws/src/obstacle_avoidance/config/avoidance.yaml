@@ -84,6 +84,7 @@
     banner_v_min: 40
     banner_a_min: 15
     banner_v_floor: 30
+    banner_b_min: 0                 # pale-blue test: off (blue banner: banner_blue.yaml)
     banner_min_area: 0.004
     banner_min_solidity: 0.7
     banner_min_aspect: 0.0
@@ -91,6 +92,7 @@
     banner_max_edges: 0.10
     banner_max_verts: 7
     banner_allow_bottom: false
+    banner_allow_top: true
     banner_gate: 0.2
     banner_hold: 10
     banner_confirm: 3

@@ -1,12 +1,12 @@
 # corridor_render.py — ray-cast depth images of a walled corridor, and colour
-# images of its green entrance banner.
+# images of its banner (green entrance / blue exit).
 #
 # Test/SITL helper (pure NumPy): renders what a forward depth camera sees in a
 # straight corridor with box obstacles, so corridor_geometry can be checked
 # against known ground truth and the planner can be flown in SITL without
 # Gazebo. render_colour gives the colour camera's view for banner_node: the
-# banner green, everything else grey (the corridor's own colours are not
-# modelled). Not used on the vehicle.
+# banner in its colour, everything else grey (the corridor's own colours are
+# not modelled). Not used on the vehicle.
 #
 # World frame: x along the corridor, y LEFT, z up, ground at z = 0. The corridor
 # spans x in [x_start, x_end] with walls at y = +-width/2.
@@ -57,6 +57,7 @@ COLOUR_CAMERA = Camera(fx=465.0, fy=465.0, cx=319.5, cy=179.5, width=640, height
 SKY_BGR = (200, 185, 170)
 SURFACE_BGR = (120, 125, 125)       # walls, ground, boxes
 BANNER_BGR = (60, 170, 40)          # cloth green (as test_banner.py)
+BLUE_BANNER_BGR = (170, 90, 30)     # cloth blue
 
 
 def _rays(cam: Camera, yaw, pitch, roll):
@@ -87,16 +88,27 @@ def banner_depth(banner: Banner, cam: Camera, pos, yaw, pitch=0.0, roll=0.0):
     return np.where(ok, t, np.inf)
 
 
-def render_colour(scene: Scene, banner: Banner, cam: Camera, pos, yaw, pitch=0.0, roll=0.0):
+def render_colour(scene: Scene, banner: Banner, cam: Camera, pos, yaw, pitch=0.0, roll=0.0,
+                  colour=BANNER_BGR):
     """Colour image (H x W x 3 uint8, BGR): the banner where nothing in the
     scene is nearer, grey surfaces, pale sky where the scene has no return."""
+    return render_colour_depth(scene, banner, cam, pos, yaw, pitch, roll, colour)[0]
+
+
+def render_colour_depth(scene: Scene, banner: Banner, cam: Camera, pos, yaw, pitch=0.0,
+                        roll=0.0, colour=BANNER_BGR):
+    """render_colour plus the depth of what each pixel shows (inf = sky):
+    views of two corridors (each in its own frame) are merged per pixel by it
+    (depth along the optical axis does not depend on the frame)."""
     z = render(scene, cam, pos, yaw, pitch, roll)
     tb = banner_depth(banner, cam, pos, yaw, pitch, roll)
+    near = np.nan_to_num(z, nan=np.inf)
     img = np.empty(z.shape + (3,), np.uint8)
     img[:] = SURFACE_BGR
     img[np.isnan(z)] = SKY_BGR
-    img[tb < np.nan_to_num(z, nan=np.inf)] = BANNER_BGR
-    return img
+    on = tb < near
+    img[on] = colour
+    return img, np.where(on, tb, near)
 
 
 def render(scene: Scene, cam: Camera, pos, yaw, pitch=0.0, roll=0.0):

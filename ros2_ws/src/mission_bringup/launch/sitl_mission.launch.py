@@ -18,8 +18,9 @@
 # obstacles (sitl_corridor_sim section of mission_params.yaml), and the REAL
 # sector_builder, coverage_guard and corridor_perception nodes run on it — the
 # corridor legs are flown closed-loop, sensor health gating included. It also
-# renders the green banner on corridor 1 into a colour stream for the REAL
-# banner_node, so the mission's entry corridor (phase 1) runs closed-loop too.
+# renders the green banner on corridor 1 and the blue one on corridor 2 into a
+# colour stream for the REAL banner_node / banner_blue_node, so the entry
+# (phase 2) and exit (phase 5) corridors run closed-loop too.
 # corridor_sim:=false: no depth at all; corridors are flown on the GPS
 # centreline and the obstacle-sensor gates are off. The entry corridor needs
 # perception, so the mission stops there (LAND).
@@ -31,8 +32,9 @@
 #   c1_left_m   ... and this far to the left (m)
 #   c1_yaw_deg  corridor 1 direction vs the nose, deg, + = turned left
 #               (0 = running straight ahead, entrance facing the drone)
-# Corridor 2 is the mirror image on the right, entered from its far (arena)
-# end. Sizes and obstacles stay those of mission_params.yaml.
+# Corridor 2 (the exit corridor, blue banner, obstacles) is the mirror image on
+# the right, entered from its far (arena) end. Sizes and obstacles stay those
+# of mission_params.yaml.
 #   ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true \
 #     c1_ahead_m:=8 c1_left_m:=3
 #
@@ -49,6 +51,8 @@
 #   takeoff         takeoff_test: gradual takeoff -> hover -> land
 #   qr_scan         qr_scan_mission_node: phase 1 -> land
 #   entry_corridor  entry_corridor_mission: takeoff -> phase 2 -> hover -> land
+#   exit_corridor   exit_corridor_mission (exit_test_after_entry): takeoff ->
+#                   phase 2 -> phase 5 (predicted from corridor 1) -> hover -> land
 
 import json
 import math
@@ -73,6 +77,7 @@ MISSIONS = {
     "takeoff": "takeoff_test",
     "qr_scan": "qr_scan_mission_node",
     "entry_corridor": "entry_corridor_mission",
+    "exit_corridor": "exit_corridor_mission",
 }
 
 
@@ -88,9 +93,11 @@ def corridor_layout(ahead: float, left: float, yaw_deg: float, sim_cfg: dict) ->
     th = math.radians(yaw_deg)
     d1 = (-math.sin(th), math.cos(th))           # corridor 1 direction (E, N)
     d2 = (math.sin(th), math.cos(th))            # mirror image
-    # corridor 2 keeps its length (its obstacles are placed along it)
+    # corridor 2 keeps its length (its obstacles are placed along it):
+    # corridor2_length_m if set, else from its yaml waypoints
     x2, y2 = sim_cfg["corridor2_waypoints_x"], sim_cfg["corridor2_waypoints_y"]
-    len2 = math.hypot(x2[1] - x2[0], y2[1] - y2[0]) - mouth - exit_
+    len2 = sim_cfg.get("corridor2_length_m") or \
+        math.hypot(x2[1] - x2[0], y2[1] - y2[0]) - mouth - exit_
     m1 = (-left, ahead)
     near2 = (left, ahead)
     far2 = (near2[0] + len2 * d2[0], near2[1] + len2 * d2[1])
@@ -212,12 +219,16 @@ def _stack(context, *args, **kwargs):
                           params=[avoidance_cfg]))
         # The sim's colour stream is for banner_node only (no wall detail):
         # corridor_perception's ~/rgb stays unmapped, so its walls come from depth.
-        nodes.append(Node(package="obstacle_avoidance", executable="banner_node",
-                          name="banner_node", output="screen",
-                          parameters=[avoidance_cfg, {"corridor_stride_px": 2}],
-                          remappings=remaps + [
-                              ("~/rgb", "/oak/rgb/image_raw"),
-                              ("~/rgb_camera_info", "/oak/rgb/camera_info")]))
+        blue_cfg = os.path.join(get_package_share_directory("obstacle_avoidance"),
+                                "config", "banner_blue.yaml")
+        for name, cfgs in (("banner_node", [avoidance_cfg]),
+                           ("banner_blue_node", [avoidance_cfg, blue_cfg])):
+            nodes.append(Node(package="obstacle_avoidance", executable="banner_node",
+                              name=name, output="screen",
+                              parameters=cfgs + [{"corridor_stride_px": 2}],
+                              remappings=remaps + [
+                                  ("~/rgb", "/oak/rgb/image_raw"),
+                                  ("~/rgb_camera_info", "/oak/rgb/camera_info")]))
 
     # SITL wind: simulator parameters only (SIM_*), set once MAVROS is up.
     wind = {"SIM_WIND_SPD": LaunchConfiguration("wind_ms").perform(context),
@@ -236,6 +247,10 @@ def _stack(context, *args, **kwargs):
 
     # Mission node last, after SITL + MAVROS have settled.
     exe = MISSIONS[LaunchConfiguration("mission").perform(context)]
+    if exe == "exit_corridor_mission":
+        # SITL starts between the corridors, not facing the exit corridor:
+        # fly the entry corridor first and predict the exit from it.
+        mission_overrides["exit_test_after_entry"] = True
     nodes.append(TimerAction(period=8.0, actions=[Node(
         package="mission_manager", executable=exe,
         name="mission_node",                # reads the mission_node: yaml section

@@ -7,11 +7,18 @@
 #   /path_planner/fly_corridor_here — corridor test: from HERE along the
 #                                    current heading, until the walls end
 #                                    (no surveyed waypoints, no set length)
-#   /path_planner/entry_corridor   — end of mission phase 1: find the banner,
+#   /path_planner/entry_corridor   — mission phase 2: find the GREEN banner,
 #                                    line up on the corridor under it, fly
 #                                    through at the middle of the opening
 #                                    (entry_corridor.py; width, length and
 #                                    altitude all measured, none configured)
+#   /path_planner/exit_corridor    — mission phase 5: the same with the BLUE
+#                                    banner (/corridor/banner_blue), obstacles
+#                                    ON and passed beside only (no climbing
+#                                    over: the climb ceiling is the corridor
+#                                    altitude; no side gap -> hold -> BLOCKED).
+#                                    The caller places the drone in front of
+#                                    the exit corridor facing it first.
 #   /path_planner/run_lawnmower    — BCD lawnmower search (arena_speed_ms)
 #   /path_planner/stop             — cancel the active leg and hold position
 #
@@ -68,6 +75,7 @@
 import math
 import threading
 import time
+from dataclasses import replace
 
 import rclpy
 from rclpy.node import Node
@@ -179,7 +187,10 @@ class PathPlannerNode(Node):
         self._yaw_enu = None            # rad, from compass heading
         self._sensor_live = False
         self._perception = None         # (dict, arrival time) newest, unconsumed
-        self._banner = None             # (dict, arrival time) newest /corridor/banner
+        # (dict, arrival time) newest message per banner colour; the active
+        # banner leg reads one of them through self._banner
+        self._banners = {"green": None, "blue": None}
+        self._banner_colour = "green"
         self._marker = "none"
 
         # ----- Run control -----
@@ -198,7 +209,9 @@ class PathPlannerNode(Node):
         self.create_subscription(Float64, "/mavros/global_position/compass_hdg", self._hdg_cb, mavros_qos)
         self.create_subscription(Bool, "/avoidance/sensor_live", self._live_cb, 10)
         self.create_subscription(Float32MultiArray, "/corridor/perception", self._perception_cb, 10)
-        self.create_subscription(Float32MultiArray, "/corridor/banner", self._banner_cb, 10)
+        for colour, topic in (("green", banner_msg.TOPIC_GREEN), ("blue", banner_msg.TOPIC_BLUE)):
+            self.create_subscription(Float32MultiArray, topic,
+                                     lambda m, c=colour: self._banner_cb(m, c), 10)
         self.create_subscription(String, "/corridor/ground_marker", self._marker_cb, 10)
 
         # Leg services block for the whole leg: reentrant group + multithreaded
@@ -212,6 +225,8 @@ class PathPlannerNode(Node):
                             self._handle_corridor_here, callback_group=cb)
         self.create_service(Trigger, "/path_planner/entry_corridor",
                             self._handle_entry_corridor, callback_group=cb)
+        self.create_service(Trigger, "/path_planner/exit_corridor",
+                            self._handle_exit_corridor, callback_group=cb)
         self.create_service(Trigger, "/path_planner/run_lawnmower",
                             self._handle_run_lawnmower, callback_group=cb)
         self.create_service(Trigger, "/path_planner/stop",
@@ -219,7 +234,7 @@ class PathPlannerNode(Node):
 
         self.get_logger().info(
             "[path_planner] Ready — fly_corridor_1, fly_corridor_2, fly_corridor_here, "
-            "entry_corridor, run_lawnmower, stop")
+            "entry_corridor, exit_corridor, run_lawnmower, stop")
 
     # ===================================================================
     # Params / callbacks
@@ -327,14 +342,23 @@ class PathPlannerNode(Node):
             return
         self._perception = (m, time.time())
 
-    def _banner_cb(self, msg: Float32MultiArray):
+    def _banner_cb(self, msg: Float32MultiArray, colour: str):
         m = banner_msg.decode(msg)
         if m is None:
             self.get_logger().error(
-                "[path_planner] /corridor/banner layout mismatch — rebuild "
+                f"[path_planner] {colour} banner layout mismatch — rebuild "
                 "obstacle_avoidance and path_planner together", throttle_duration_sec=5.0)
             return
-        self._banner = (m, time.time())
+        self._banners[colour] = (m, time.time())
+
+    @property
+    def _banner(self):
+        """Newest message of the active leg's banner (_banner_colour)."""
+        return self._banners[self._banner_colour]
+
+    @_banner.setter
+    def _banner(self, value):
+        self._banners[self._banner_colour] = value
 
     def _marker_cb(self, msg: String):
         self._marker = msg.data
@@ -523,19 +547,24 @@ class PathPlannerNode(Node):
         return result
 
     # ===================================================================
-    # Entry corridor (end of phase 1) — logic and rationale in entry_corridor.py
+    # Banner corridors: entry (phase 2, green) and exit (phase 5, blue) —
+    # logic and rationale in entry_corridor.py
     # ===================================================================
 
-    def _entry_corridor(self, leg):
-        """Find the green banner, line up on the walls under it, fly through
-        at the middle of the opening until the walls end. Ends holding where
-        it finished (the next phase decides what follows)."""
+    def _banner_corridor(self, leg, colour, obstacles, climb):
+        """Find the `colour` banner, line up on the walls under it, fly
+        through at the middle of the opening until the walls end. Ends
+        holding where it finished (the next phase decides what follows).
+        obstacles: pass obstacles (False: a clean corridor). climb False: never
+        above the corridor altitude — obstacles are only passed beside."""
         if not self._c_need_perception:
             return False, f"CONFIG {leg}: needs corridor perception (require_corridor_perception)"
+        self._banner_colour = colour
+        topic = banner_msg.TOPIC_GREEN if colour == "green" else banner_msg.TOPIC_BLUE
         deadline = time.time() + 5.0
         while self._banner is None or time.time() - self._banner[1] > 1.0:
             if self._cancel.is_set() or time.time() > deadline:
-                return False, (f"NO_BANNER_FEED {leg}: no /corridor/banner — is banner_node "
+                return False, (f"NO_BANNER_FEED {leg}: no {topic} — is the {colour} banner_node "
                                "running and the OAK colour stream on (i_pipeline_type RGBD)?")
             time.sleep(0.1)
         alt0 = self._rel_alt if self._rel_alt is not None else self.cfg.cruise_altitude_m
@@ -552,7 +581,8 @@ class PathPlannerNode(Node):
         axis_yaw = track.axis
         axis = (math.sin(axis_yaw), math.cos(axis_yaw))         # (north, east)
         result = self._follow_corridor(leg, self._gps, axis, axis_yaw, None, nominal=nominal,
-                                       track=track, obstacles=False, alt_gate=True)
+                                       track=track, obstacles=obstacles, alt_gate=True,
+                                       climb=climb)
         if not result[1].startswith("CANCELLED"):
             self._hold(self._rel_alt if self._rel_alt is not None else nominal)
         return result
@@ -624,7 +654,7 @@ class PathPlannerNode(Node):
                     return False, f"WP_TIMEOUT {leg}: search altitude {a:.1f} m not reached"
             else:
                 self.get_logger().info(
-                    f"[path_planner] {leg}: searching for the green banner at {a:.1f} m "
+                    f"[path_planner] {leg}: searching for the {self._banner_colour} banner at {a:.1f} m "
                     f"({span} around {math.degrees(centre):.0f} deg ENU, "
                     f"{ep.search_yaw_rate_deg_s:.0f} deg/s)")
             if found is None:
@@ -846,7 +876,7 @@ class PathPlannerNode(Node):
         return d_n * axis[0] + d_e * axis[1], d_n * axis[1] - d_e * axis[0]
 
     def _follow_corridor(self, leg, entry, axis, axis_yaw, length, nominal=None,
-                         track=None, obstacles=True, alt_gate=False):
+                         track=None, obstacles=True, alt_gate=False, climb=True):
         """Follow the corridor from `entry` along `axis` (see the header).
 
         length: surveyed length (m), or None = unknown: only a measured wall
@@ -854,11 +884,14 @@ class PathPlannerNode(Node):
         corridor_altitude_m). track: a CorridorTracker already locked on this
         corridor (entry corridor: from the approach). obstacles False: no
         pass/climb (clean corridor). alt_gate: no forward progress until the
-        vehicle has first come within 2 x alt_tol of nominal."""
+        vehicle has first come within 2 x alt_tol of nominal. climb False: the
+        climb ceiling is nominal — obstacles are passed beside or block."""
         fp = self._follow
+        nominal = self._c_alt if nominal is None else nominal
+        if not climb:
+            fp = replace(fp, max_altitude_m=nominal)
         track = track if track is not None else CorridorTracker(fp)
         memory = ObstacleMemory(fp)
-        nominal = self._c_alt if nominal is None else nominal
         alt_ready = not alt_gate
         started = False
         wait_until = time.time() + self._c_entry_timeout
@@ -1030,7 +1063,8 @@ class PathPlannerNode(Node):
             if cmd.mode == "blocked":
                 blocked_since = blocked_since or t0
                 if t0 - blocked_since > self.cfg.sensor_fail_timeout_s:
-                    return False, f"BLOCKED {leg} at s={s:.1f} m: no side gap and too tall to climb"
+                    return False, (f"BLOCKED {leg} at s={s:.1f} m: no side gap and "
+                                   + ("too tall to climb" if climb else "climbing is off"))
             else:
                 blocked_since = None
 
@@ -1090,7 +1124,14 @@ class PathPlannerNode(Node):
         # Each phase (search, approach, corridor) sets its own deadline.
         return self._respond(response, self._run(
             "entry_corridor", self.cfg.corridor_timeout_s,
-            lambda: self._entry_corridor("entry_corridor")))
+            lambda: self._banner_corridor("entry_corridor", "green",
+                                          obstacles=False, climb=True)))
+
+    def _handle_exit_corridor(self, request, response):
+        return self._respond(response, self._run(
+            "exit_corridor", self.cfg.corridor_timeout_s,
+            lambda: self._banner_corridor("exit_corridor", "blue",
+                                          obstacles=True, climb=False)))
 
     def _handle_run_lawnmower(self, request, response):
         return self._respond(response, self._run(

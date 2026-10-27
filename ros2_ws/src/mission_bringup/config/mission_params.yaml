@@ -91,6 +91,15 @@ mission_node:
     arena_match_passes: 2             # fly over the match + scan again, up to this often
     arena_match_tol_m: 1.0
     arena_rescan_timeout_s: 15.0
+    # Phase 5, exit corridor (path_planner/exit_corridor.py): corridor 1's far
+    # end mirrored across the line through the takeoff point = the exit
+    # corridor's arena-side entrance (blue banner). Flown to at arena_alt_m
+    # around the red zones, then down to corridor_start_alt_m facing back
+    # down the corridors and a +-90 deg banner search. Not found -> shifted
+    # this far sideways each way (away from corridor 1 first); then LAND.
+    exit_search_standoff_m: 6.0       # search this far out in the arena from it
+    exit_search_shift_m: 3.0          # 0 = only the predicted point
+    exit_corridor_timeout_s: 600.0    # mission_node's wait per exit corridor leg
     # Drop: fly over the projected QR position, settle, release.
     drop_arrival_tolerance_m: 1.0
     drop_arrival_timeout_s: 30.0
@@ -242,11 +251,13 @@ sitl_corridor_sim:
     corridor2_waypoints_x: [13.0, -3.0]
     corridor2_waypoints_y: [-5.0, -5.0]
     corridor1_obstacles: [0.0]          # clean
-    # 40 % against the left wall (pass right), 30 % against the right wall
-    # (pass left), then a centred one too tall to pass beside (climb over).
-    corridor2_obstacles: [3.0, 0.457, 0.61, 2.0,
-                          6.5, -0.533, 0.46, 2.0,
-                          10.0, 0.0, 0.55, 2.0]
+    # Corridor 2 = the exit corridor (s from its arena-side mouth): three
+    # 3.5 ft wide x 6 ft tall obstacles (1.07 x 1.83 m) — near the left wall
+    # (pass right), near the right wall (pass left), near the middle. Real
+    # positions are random; their depth is unknown (obstacle_depth_m).
+    corridor2_obstacles: [1.2, 1.0, 1.0668, 1.8288,
+                          3.4, -0.9, 1.0668, 1.8288,
+                          5.4, 0.1, 1.0668, 1.8288]
     corridor_width_m: 1.524
     wall_height_m: 4.0
     # Corridor 1 = the entry corridor, competition size (11.5 ft wide, 8 ft
@@ -256,11 +267,15 @@ sitl_corridor_sim:
     corridor1_width_m: 3.5052
     corridor1_wall_height_m: 2.4384
     corridor1_length_m: 6.7056
-    # Green banner on top of corridor 1's mouth (colour stream only, no
-    # stereo depth): 11.5 x 1.5 ft, centred
+    # Corridor 2 = the exit corridor, the same size (blue banner on it).
+    corridor2_width_m: 3.5052
+    corridor2_wall_height_m: 2.4384
+    corridor2_length_m: 6.7056
+    # Banners (colour stream only, no stereo depth): 11.5 x 1.5 ft, centred
+    # on top of the mouth — green on corridor 1, blue on corridor 2
     banner_width_m: 3.5052
     banner_height_m: 0.4572
-    banner_above_walls_m: 0.0           # 0 = sitting on corridor 1's walls
+    banner_above_walls_m: 0.0           # 0 = sitting on the corridor's walls
     mouth_offset_m: 2.5
     exit_offset_m: 1.0
     gps_offset_m: 0.5                   # EKF vs truth: GPS-only flight would scrape a wall

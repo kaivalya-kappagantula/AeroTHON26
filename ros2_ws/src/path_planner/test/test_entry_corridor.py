@@ -1,10 +1,11 @@
-# Entry corridor (end of mission phase 1): the pure logic in
-# entry_corridor.py, and the whole leg closed-loop —
-# path_planner_node._entry_corridor (the real code: search, approach, height,
-# line-up, corridor follower, exit) against a fake clock, a kinematic vehicle
-# and oracles for the banner and the walls that model the cameras' limits.
-# RealWorld replaces the wall oracle with obstacle_avoidance's real corridor
-# fit on ray-cast depth, for corridor sizes the oracle cannot judge.
+# Entry corridor (mission phase 2): the pure logic in entry_corridor.py, and
+# the whole leg closed-loop — path_planner_node._banner_corridor (the real
+# code: search, approach, height, line-up, corridor follower, exit) against a
+# fake clock, a kinematic vehicle and oracles for the banner and the walls
+# that model the cameras' limits. RealWorld replaces the wall oracle with
+# obstacle_avoidance's real corridor fit on ray-cast depth, for corridor sizes
+# the oracle cannot judge — and for the exit corridor (phase 5, blue banner)
+# with its obstacles, which the same leg passes beside.
 import collections
 import math
 import statistics
@@ -267,9 +268,10 @@ class RealWorld(World):
                  width=c.width // 2, height=c.height // 2)
     FIT = cg.CorridorParams()
 
-    def __init__(self, corridor, length, wall_height, banner_h, pose):
+    def __init__(self, corridor, length, wall_height, banner_h, pose, boxes=()):
         super().__init__([corridor], length, banner_h, pose)
-        self.scene = Scene(width=corridor[1], x_start=0.0, x_end=length, wall_height=wall_height)
+        self.scene = Scene(width=corridor[1], x_start=0.0, x_end=length, wall_height=wall_height,
+                           boxes=list(boxes))
         self.widths = collections.deque(maxlen=15)
 
     def perception(self):
@@ -298,8 +300,11 @@ def node(monkeypatch):
     rclpy.shutdown()
 
 
-def fly(node_clock, world, monkeypatch):
+def fly(node_clock, world, monkeypatch, exit_corridor=False):
+    """The entry corridor leg (green banner, clean), or with exit_corridor
+    the exit corridor leg (blue banner, obstacles, no climbing)."""
     n, clock = node_clock
+    n._banner_colour = "blue" if exit_corridor else "green"
 
     def sync():
         n._gps = world.gps()
@@ -323,7 +328,9 @@ def fly(node_clock, world, monkeypatch):
     world.target = (world.x, world.y, world.alt, world.yaw)
     sync()
     n._leg_deadline = clock.time() + 600.0
-    return n._entry_corridor("t")
+    if exit_corridor:
+        return n._banner_corridor("t", "blue", obstacles=True, climb=False)
+    return n._banner_corridor("t", "green", obstacles=False, climb=True)
 
 
 def inside(world):
@@ -404,6 +411,54 @@ def test_real_corridor_fit_through(node, monkeypatch, width_ft, ahead, left):
     assert pts and world.x >= world.length
     assert max(abs(y) for x, y, a in pts) < 0.15
     assert all(a == pytest.approx(4 * FT, abs=0.2) for x, y, a in pts)   # half of 8 ft
+
+
+OBSTACLE_W, OBSTACLE_TOP, OBSTACLE_D = 3.5 * FT, 6 * FT, 0.4
+
+
+def boxes_at(*spec):
+    """(s_front, lateral centre + left) -> Scene boxes, 3.5 x 6 ft obstacles."""
+    h = OBSTACLE_W / 2
+    return [(s, s + OBSTACLE_D, c - h, c + h, OBSTACLE_TOP) for s, c in spec]
+
+
+@pytest.mark.parametrize("spec", [
+    ((1.2, 1.0), (3.4, -0.9), (5.4, 0.1)),      # left wall, right wall, middle
+    ((1.5, 0.0), (3.6, 1.1), (5.6, -1.1)),      # middle, then both walls
+])
+def test_exit_corridor_passes_obstacles_beside(node, monkeypatch, spec):
+    # The exit corridor: competition size, three 3.5 x 6 ft obstacles. 6 ft
+    # in an 8 ft corridor: the leg must go around each one (climbing is off)
+    # without touching it or a wall, and come out the far end.
+    boxes = boxes_at(*spec)
+    half_w = 11.5 * FT / 2
+    world = RealWorld((0.0, 11.5 * FT), length=22 * FT, wall_height=8 * FT,
+                      banner_h=8 * FT, pose=(-10.0, 0.0, 3.0, 0.0), boxes=boxes)
+    ok, msg = fly(node, world, monkeypatch, exit_corridor=True)
+    assert ok, msg
+    assert "walls ended" in msg
+    pts = inside(world)
+    assert pts and world.x >= world.length
+    assert max(a for x, y, a in pts) < 4 * FT + 0.25            # never climbed
+    hw = node[0]._follow.drone_width_m / 2
+    assert max(abs(y) for x, y, a in pts) < half_w - hw        # off the walls
+    for x0, x1, y0, y1, _ in boxes:
+        beside = [y for x, y, a in pts if x0 - hw <= x <= x1 + hw]
+        assert beside, "no track beside an obstacle"
+        gap = min(max(y0 - y, y - y1) for y in beside)
+        assert gap > hw, f"within {gap:.2f} m of the obstacle at {x0:.1f} m"
+
+
+def test_exit_corridor_blocked_obstacle_is_not_climbed(node, monkeypatch):
+    # A wide obstacle leaves no gap either side: the leg holds (no climbing
+    # over) and fails BLOCKED rather than flying into it.
+    boxes = [(2.0, 2.4, -1.4, 1.4, OBSTACLE_TOP)]
+    world = RealWorld((0.0, 11.5 * FT), length=22 * FT, wall_height=8 * FT,
+                      banner_h=8 * FT, pose=(-10.0, 0.0, 3.0, 0.0), boxes=boxes)
+    ok, msg = fly(node, world, monkeypatch, exit_corridor=True)
+    assert not ok and msg.startswith("BLOCKED"), msg
+    assert max(x for x, y, a in world.track) < 2.0               # stopped short
+    assert max(a for x, y, a in inside(world)) < 4 * FT + 0.25
 
 
 def test_blue_floor_marker_does_not_end_a_leg_with_no_length(node, monkeypatch):

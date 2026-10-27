@@ -1,0 +1,19 @@
+# banner_blue.yaml — the BLUE exit-corridor banner: a second banner_node
+# (name banner_blue_node), loaded AFTER avoidance.yaml so these override its
+# green banner_* values. Everything not listed (shape/texture filters,
+# tracker) is the green banner's: the two banners are the same cloth and
+# size, only the colour differs.
+#
+# UNTUNED: the hue band is a starting point for blue cloth. Tune on site with
+# banner_debug_image: true (annotated /corridor/banner_blue/debug), facing the
+# banner and facing open sky — a blue sky must stay rejected.
+/**:
+  ros__parameters:
+    banner_topic: /corridor/banner_blue
+    banner_h_min: 100               # OpenCV hue 0..179: blue ~100-130
+    banner_h_max: 130
+    banner_s_min: 80                # above a hazy sky's saturation
+    banner_v_min: 40
+    banner_a_min: 0                 # the pale test is the green-red axis: off
+    banner_b_min: 15                # pale/glare blue: Lab b* < -15 instead
+    banner_allow_top: false         # a blob on the top edge (sky) is never acquired

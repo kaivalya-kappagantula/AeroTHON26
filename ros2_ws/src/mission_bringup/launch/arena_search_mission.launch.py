@@ -32,6 +32,8 @@
 #                   x 0..width, y 0..length); fcu_url defaults to SITL's
 #   sim_reference_text  the QR text the SITL reference is made from ("" = a
 #                   QR holding no information; matched by picture)
+#   live_view       true = live_view_node streams the down camera (with a
+#                   status overlay) to http://<drone>:live_view_port/
 #
 # Needs both workspaces sourced on the drone (source ~/AeroTHON26/env.sh).
 
@@ -110,6 +112,8 @@ def generate_launch_description():
         DeclareLaunchArgument("sim_qr_codes", default_value=SIM_QR_CODES),
         DeclareLaunchArgument("sim_red_zones", default_value=SIM_RED_ZONES),
         DeclareLaunchArgument("sim_reference_text", default_value=""),
+        DeclareLaunchArgument("live_view", default_value="true", choices=["true", "false"]),
+        DeclareLaunchArgument("live_view_port", default_value="8080"),
     ]
 
     mavros = IncludeLaunchDescription(
@@ -181,6 +185,16 @@ def generate_launch_description():
         }],
     )
 
+    live_view = Node(
+        package="qr_detection",
+        executable="live_view_node",
+        name="live_view_node",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("live_view")),
+        parameters=[{"port": ParameterValue(LaunchConfiguration("live_view_port"),
+                                            value_type=int)}],
+    )
+
     # Full-resolution sim frames (2.7 MB) must go through shared memory or
     # most are lost as UDP fragments (config/fastdds_large_frames.xml).
     large_frames = SetEnvironmentVariable(
@@ -195,7 +209,7 @@ def generate_launch_description():
         # Camera + perception once MAVROS is up (the sim camera and
         # red_zone_node take their origin from the first GPS fix: vehicle on
         # the takeoff point).
-        TimerAction(period=3.0, actions=[camera, sim_camera, red_zone,
+        TimerAction(period=3.0, actions=[camera, sim_camera, red_zone, live_view,
                                          OpaqueFunction(function=_scanner)]),
         TimerAction(period=6.0, actions=[mission]),
     ])

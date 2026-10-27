@@ -7,12 +7,16 @@
 # mission_params.yaml applies unchanged) with a shorter sequence:
 #   1. wait for MAVROS and the pilot's RC CH7 switch          (mission_node)
 #   2. GPS fix (+ obstacle sensor if required)                 (mission_node)
-#   3. gradual takeoff to cruise_altitude_m, holding the placed heading,
-#      then straight up to arena_alt_m                         (mission_node)
+#   3. gradual takeoff, holding the placed heading: armed ARM_WAIT_S on the
+#      ground, lift-off to takeoff_liftoff_alt_m, then a steady
+#      takeoff_climb_rate_ms climb over the lift-off point to
+#      cruise_altitude_m and on to arena_alt_m                (mission_node)
 #   4. arena search: BCD sweep, never over red (stop, confirm, re-plan
 #      around), matching every QR against the stored reference
 #   5. match: over it, hover arena_test_hover_s, LAND there. No match after
 #      the whole arena: LAND where the sweep ended.
+# Every STATUS_LOG_S the terminal gets one status line (state, FC mode,
+# altitude, distance from the lift-off point, ground speed, battery).
 #
 # The test arena: the drone takes off at its corner; it runs
 # arena_test_length_m ahead along the nose the drone was placed with and
@@ -33,12 +37,15 @@
 #   ros2 launch mission_bringup arena_search_mission.launch.py sim:=true
 
 import math
+import time
 
 import rclpy
 
+from mission_common import mavros_utils as mav
 from mission_manager.mission_node import MissionAbort, MissionNode
 from path_planner.arena_frame import M_PER_DEG_LAT
 
+STATUS_LOG_S = 2.0
 
 class ArenaSearchMission(MissionNode):
 
@@ -49,6 +56,33 @@ class ArenaSearchMission(MissionNode):
         self.declare_parameter("arena_test_width_m", 25.0)    # to the right
         self.declare_parameter("arena_test_use_config", False)
         self.declare_parameter("arena_test_hover_s", 5.0)
+        self._last_xy = None            # (east, north, t) for the ground speed
+        self.create_timer(STATUS_LOG_S, self._log_status)
+
+    def _log_status(self):
+        """One status line in the terminal (main-thread timer)."""
+        st = self.mavros_state
+        if st is None or not st.connected:
+            self.get_logger().info("[status] waiting for the FC (MAVROS not connected)")
+            return
+        now = time.monotonic()
+        speed = None
+        if self.local_xy is not None:
+            if self._last_xy is not None:
+                dx = self.local_xy[0] - self._last_xy[0]
+                dy = self.local_xy[1] - self._last_xy[1]
+                speed = math.hypot(dx, dy) / max(now - self._last_xy[2], 1e-3)
+            self._last_xy = (self.local_xy[0], self.local_xy[1], now)
+        home = (f"{mav.haversine(*self.gps, *self.home):.1f} m"
+                if self.gps is not None and self.home is not None else "--")
+        alt = f"{self.rel_alt:.2f} m" if self.rel_alt is not None else "--"
+        batt = f"{self.battery_voltage:.2f} V" if self.battery_voltage else "--"
+        self.get_logger().info(
+            f"[status] {self.sm.state_id} | {st.mode} {'ARMED' if st.armed else 'disarmed'}"
+            f" | alt {alt} | from home {home}"
+            f" | gs {f'{speed:.2f} m/s' if speed is not None else '--'}"
+            f" | hdg {f'{self.heading_deg:.0f}' if self.heading_deg is not None else '--'}"
+            f" | batt {batt} | gps {'fix' if self.gps is not None else 'NO FIX'}")
 
     def _p(self, name):
         return self.get_parameter(name).value
@@ -73,6 +107,12 @@ class ArenaSearchMission(MissionNode):
             self.sm.auto_activate()
             self._preflight()
             self._takeoff()
+            # Same steady climb on up to the sweep altitude (arena.run would
+            # otherwise jump the altitude target straight to it).
+            arena_alt = float(self.cfg.arena_alt_m)
+            if self.rel_alt is not None and arena_alt - self.rel_alt > self.cfg.altitude_tolerance_m:
+                self._climb_gradually(arena_alt)
+                self.get_logger().info(f"[arena_search_mission] At {self.rel_alt:.2f} m")
 
             self.sm.airborne()
             self.sm.qr_scanned()            # no reference QR scan: loaded from file

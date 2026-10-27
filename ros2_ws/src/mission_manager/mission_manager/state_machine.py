@@ -17,12 +17,15 @@
 #   SCAN_REFERENCE_QR -> LANDING  (qr_test_done: qr_scan_mission_node)
 #   ENTRY_CORRIDOR -> LANDING     (entry_test_done: entry_corridor_mission)
 #   ARENA_SEARCH / TARGET_FOUND -> LANDING  (arena_test_done: arena_search_mission)
+#   CORRIDOR_2_TRANSIT -> LANDING (exit_test_done: exit_corridor_mission)
 #
 # Phase 1 = TAKEOFF (gradual, to cruise altitude) + SCAN_REFERENCE_QR (read
 # in the air over the launch point and stored). qr_scanned leaves the QR
 # phase whether or not the QR was read: without it the mission carries on
 # with no target. ENTRY_CORRIDOR = descend, green banner search, line-up on
 # the walls under it, corridor flown through, climb to cruise.
+# CORRIDOR_2_TRANSIT = phase 5, the exit corridor: to where it should be
+# (corridor 1 mirrored), blue banner search, through with obstacles passed.
 #
 # Exits from any active phase:
 #   abort    -> RC_MODE  (pilot flipped the auto switch low; pilot flies)
@@ -69,6 +72,7 @@ class MissionSM(StateMachine):
     qr_test_done          = SCAN_REFERENCE_QR.to(LANDING)
     entry_test_done       = ENTRY_CORRIDOR.to(LANDING)
     arena_test_done       = ARENA_SEARCH.to(LANDING) | TARGET_FOUND.to(LANDING)
+    exit_test_done        = CORRIDOR_2_TRANSIT.to(LANDING)
 
     abort = (
         IDLE.to(RC_MODE) |

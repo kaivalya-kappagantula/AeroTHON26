@@ -36,6 +36,7 @@ from mission_common.config_loader import load_mission_config
 from mission_manager.arena_search import ArenaSearch
 from mission_manager.reference_qr import ReferenceQr
 from mission_manager.state_machine import MissionSM
+from path_planner.exit_corridor import search_points
 
 # Sit armed on the ground this long before every takeoff command (precaution).
 # Keep it under ArduPilot's DISARM_DELAY (default 10 s) or the FC disarms on
@@ -100,6 +101,8 @@ class MissionNode(Node):
         self.heading_deg = None         # compass, deg clockwise from North
         self.placed_heading_deg = None  # heading as placed on the ground (held in the climb)
         self.local_xy = None            # (east, north) of the EKF local position, m
+        self.c1_exit = None             # (lat, lon, axis ENU rad): where phase 2 left
+                                        # corridor 1's walls — phase 5 mirrors it
         self._rc_auto_active = False
         self._sensor_live = False       # coverage_guard defaults are fail-safe False
         self._coverage_ok = False
@@ -459,7 +462,48 @@ class MissionNode(Node):
         self._climb_in_place(self.cfg.corridor_start_alt_m, self.placed_yaw_enu())
         self._fly_leg(srv.SRV_ENTRY_CORRIDOR, self.cfg.entry_corridor_timeout_s,
                       "entry corridor")
+        # The planner ends just past the walls, nose down the corridor:
+        # corridor 1's far end and direction, for phase 5.
+        if self.gps is not None and self.heading_deg is not None:
+            self.c1_exit = (self.gps[0], self.gps[1], math.radians(90.0 - self.heading_deg))
+            self.get_logger().info(
+                f"[mission_node] Corridor 1 left at ({self.gps[0]:.7f}, {self.gps[1]:.7f}), "
+                f"heading {self.heading_deg:.0f} deg")
         self._climb_in_place(self.cfg.post_entry_alt_m)
+
+    def _exit_corridor_phase(self):
+        """Phase 5: to where the exit corridor should be (corridor 1 mirrored
+        across the takeoff point, path_planner/exit_corridor.py) at
+        arena_alt_m around the red zones, face back down the corridors, down
+        to corridor_start_alt_m, then /path_planner/exit_corridor — +-90 deg
+        blue banner search, line-up, through with obstacles passed beside.
+        Banner not found -> the next search point; none left -> MissionAbort
+        (LAND in place). Ends just past the exit corridor's walls."""
+        if self.c1_exit is None or self.home is None:
+            raise MissionAbort("failure", "exit corridor: corridor 1's exit was not recorded")
+        lat1, lon1, axis = self.c1_exit
+        d_n, d_e = mav.ne_offset(self.home[0], self.home[1], lat1, lon1)
+        pts = search_points((d_e, d_n), axis, float(self.cfg.exit_search_standoff_m),
+                            float(self.cfg.exit_search_shift_m))
+        for i, ((e, n), facing) in enumerate(pts):
+            label = f"exit corridor search point {i + 1}/{len(pts)}"
+            lat, lon = mav.offset_gps(self.home[0], self.home[1], n, e)
+            self.get_logger().info(
+                f"[mission_node] {label}: ({e:+.1f} E, {n:+.1f} N) m from takeoff, "
+                f"facing {math.degrees(facing):.0f} deg ENU")
+            if not self.arena.go_to(lat, lon, label):
+                continue
+            self._climb_in_place(self.cfg.corridor_start_alt_m, facing)
+            res = self._call_leg(srv.SRV_EXIT_CORRIDOR, self.cfg.exit_corridor_timeout_s)
+            if res is None:
+                raise MissionAbort("failure", "exit corridor: no response from path_planner")
+            if res.success:
+                return
+            if not res.message.startswith("NO_BANNER"):
+                raise MissionAbort("failure", f"exit corridor failed: {res.message}")
+            self.get_logger().warn(f"[mission_node] {label}: {res.message}")
+        raise MissionAbort("failure", "exit corridor: blue banner not found at any search "
+                                      "point — landing here")
 
     def _return_over_home(self):
         """Fly level back over the takeoff point (the reference QR search and
@@ -561,9 +605,12 @@ class MissionNode(Node):
                     "[mission_node] Target QR not found — keeping payload, continuing")
                 self.sm.search_exhausted()
 
-            self._fly_leg(srv.SRV_FLY_CORRIDOR_2, self.cfg.corridor_timeout_s + 30.0, "corridor 2")
+            # Phase 5: the exit corridor. Phase 6 (home, land) below is
+            # the old code, not reworked yet.
+            self._exit_corridor_phase()
 
             self.sm.c2_complete()
+            self._climb_in_place(self.cfg.cruise_altitude_m)
             if not self._goto_and_wait(*self.home, self.cfg.cruise_altitude_m,
                                        self.cfg.arrival_tolerance_m, self.cfg.arrival_timeout_s,
                                        self.cfg.transit_speed_ms):

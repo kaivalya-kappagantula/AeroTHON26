@@ -1,13 +1,15 @@
-# banner_node.py — green corridor-entrance banner from the forward OAK-D
-# colour camera.
+# banner_node.py — a corridor banner from the forward OAK-D colour camera:
+# the green entrance banner (default) or, as a second instance
+# (banner_blue_node, config/banner_blue.yaml), the blue exit-corridor banner.
 #
 #   in : ~/rgb, ~/rgb_camera_info  (remapped to the OAK colour stream)
 #        ~/depth, ~/camera_info    (OAK stereo depth: distance to the banner)
 #        /mavros/imu/data          (pitch + roll: angles in the LEVEL frame)
 #        /mavros/global_position/rel_alt, /mavros/global_position/compass_hdg
-#   out: /corridor/banner          (Float32MultiArray, layout in
-#                                   mission_common/banner_msg.py)
-#        /corridor/banner/debug    (Image bgr8, only with banner_debug_image)
+#   out: banner_topic              (Float32MultiArray, layout in
+#                                   mission_common/banner_msg.py; green:
+#                                   /corridor/banner, blue: /corridor/banner_blue)
+#        <banner_topic>/debug      (Image bgr8, only with banner_debug_image)
 #
 # Two corridors stand side by side; the green banner across the top of one
 # entrance says which to enter. path_planner (entry corridor) searches for it,
@@ -44,8 +46,7 @@ from obstacle_avoidance import geometry as g
 from obstacle_avoidance.banner import BannerParams, Detector, Tracker
 from obstacle_avoidance.depth_image import DepthDecodeError, decode_bgr, decode_depth
 
-TOPIC = '/corridor/banner'
-DEBUG_TOPIC = '/corridor/banner/debug'
+TOPIC = banner_msg.TOPIC_GREEN
 STATE = {'HOLD': banner_msg.HOLD, 'LOCK': banner_msg.LOCK}
 
 
@@ -55,6 +56,7 @@ class BannerNode(Node):
         super().__init__('banner_node')
         d = BannerParams()
         self.declare_parameter('banner_rate_hz', 15.0)
+        self.declare_parameter('banner_topic', TOPIC)
         for f in fields(BannerParams):
             self.declare_parameter(f'banner_{f.name}', getattr(d, f.name))
         self.declare_parameter('banner_depth_min_points', 20)
@@ -72,6 +74,7 @@ class BannerNode(Node):
         self.stride = int(gp('corridor_stride_px'))
         self.pitch_offset = math.radians(float(gp('camera_pitch_offset_deg')))
         self.pitch_compensation = bool(gp('pitch_compensation'))
+        topic = str(gp('banner_topic'))
 
         self._K = None              # colour (fx, fy, cx, cy, width, height) from camera_info
         self._K_depth = None        # depth (fx, fy, cx, cy, width)
@@ -84,10 +87,11 @@ class BannerNode(Node):
         self._warned = set()
 
         self.pub = self.create_publisher(
-            Float32MultiArray, TOPIC,
+            Float32MultiArray, topic,
             QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                        history=HistoryPolicy.KEEP_LAST, depth=5))
-        self.debug_pub = self.create_publisher(Image, DEBUG_TOPIC, 1) if self.debug else None
+        self.debug_pub = (self.create_publisher(Image, topic + '/debug', 1)
+                          if self.debug else None)
         self.create_subscription(Image, '~/rgb', self._on_rgb, qos_profile_sensor_data)
         self.create_subscription(CameraInfo, '~/rgb_camera_info', self._on_rgb_info,
                                  qos_profile_sensor_data)
@@ -110,7 +114,8 @@ class BannerNode(Node):
         p = self.params
         self.get_logger().info(
             f'banner_node up: H[{p.h_min},{p.h_max}] S>{p.s_min} V>{p.v_min} '
-            f'pale a*<-{p.a_min} V>{p.v_floor}, min area {p.min_area:.3f} -> {TOPIC}')
+            f'pale a*<-{p.a_min} b*<-{p.b_min} V>{p.v_floor}, min area {p.min_area:.3f}'
+            f'{"" if p.allow_top else ", not acquired on the top edge"} -> {topic}')
 
     def _now_s(self):
         return self.get_clock().now().nanoseconds * 1e-9

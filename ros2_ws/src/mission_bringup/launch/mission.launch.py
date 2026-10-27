@@ -7,7 +7,8 @@
 # ground-marker detector (downward camera), the OAK-D Lite driver +
 # obstacle_avoidance pipeline (sector_builder -> OBSTACLE_DISTANCE to
 # ArduPilot, coverage_guard health Bools, corridor_perception for the
-# corridors), banner_node (green entrance banner, OAK colour camera), the RPi
+# corridors), banner_node (green entrance banner) and banner_blue_node (blue
+# exit-corridor banner) on the OAK colour camera, the RPi
 # Camera 3 driver (optional), and finally the mission node.
 #
 # Pi 5 <-> Pixhawk 6C Mini on TELEM2 (GPIO14/15 UART0):
@@ -158,6 +159,23 @@ def generate_launch_description():
         ],
     )
 
+    # Blue exit-corridor banner (phase 5): the same node, blue values from
+    # banner_blue.yaml on top, publishing /corridor/banner_blue.
+    banner_blue_node = Node(
+        package="obstacle_avoidance",
+        executable="banner_node",
+        name="banner_blue_node",
+        output="screen",
+        parameters=[os.path.join(avoidance_share, "config", "avoidance.yaml"),
+                    os.path.join(avoidance_share, "config", "banner_blue.yaml")],
+        remappings=[
+            ("~/rgb", "/oak/rgb/image_raw"),
+            ("~/rgb_camera_info", "/oak/rgb/camera_info"),
+            ("~/depth", "/oak/stereo/image_raw"),
+            ("~/camera_info", "/oak/stereo/camera_info"),
+        ],
+    )
+
     return LaunchDescription([
         launch_mavros_arg,
         fcu_url_arg,
@@ -174,6 +192,7 @@ def generate_launch_description():
         oakd_launch,
         avoidance_launch,
         banner_node,
+        banner_blue_node,
 
         # Mission node last; it also waits for MAVROS + the pilot's switch.
         TimerAction(period=5.0, actions=[mission_node]),

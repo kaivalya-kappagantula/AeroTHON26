@@ -205,9 +205,11 @@ THROTTLE_CAP_PARAM = "MOT_SPIN_MAX"
 THROTTLE_CAP = 0.80
 
 
-def apply_throttle_cap(node: Node, timeout: float = 5.0) -> bool:
+def apply_throttle_cap(node: Node, timeout: float = 5.0, load_wait: float = 60.0) -> bool:
     """Write THROTTLE_CAP to MOT_SPIN_MAX and confirm the FCU echoes it back.
 
+    MAVROS rejects the set ("Unknown parameter") until it has pulled the FC's
+    parameter list after connecting, so retry for up to load_wait s.
     Call once per mission before arming; refuse to fly if it returns False.
     """
     from mavros_msgs.srv import ParamSetV2
@@ -217,11 +219,20 @@ def apply_throttle_cap(node: Node, timeout: float = 5.0) -> bool:
     req.param_id = THROTTLE_CAP_PARAM
     req.value = ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
                                double_value=THROTTLE_CAP)
-    result = _call_service(node, ParamSetV2, "/mavros/param/set", req, timeout=timeout)
-    if result and result.success and abs(result.value.double_value - THROTTLE_CAP) < 1e-3:
+    deadline = time.time() + load_wait
+    while True:
+        result = _call_service(node, ParamSetV2, "/mavros/param/set", req, timeout=timeout)
+        if result and result.success and abs(result.value.double_value - THROTTLE_CAP) < 1e-3:
+            node.get_logger().info(
+                f"[mavros_utils] Throttle cap: {THROTTLE_CAP_PARAM} = {THROTTLE_CAP:.2f} "
+                "(confirmed)")
+            return True
+        if time.time() > deadline:
+            break
         node.get_logger().info(
-            f"[mavros_utils] Throttle cap: {THROTTLE_CAP_PARAM} = {THROTTLE_CAP:.2f} (confirmed)")
-        return True
+            "[mavros_utils] Throttle cap not set yet (MAVROS still loading the FC "
+            "parameters?) — retrying", throttle_duration_sec=10.0)
+        time.sleep(2.0)
     got = result.value.double_value if result else None
     node.get_logger().error(
         f"[mavros_utils] Throttle cap NOT applied: {THROTTLE_CAP_PARAM} want "

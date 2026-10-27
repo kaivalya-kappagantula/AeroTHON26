@@ -29,6 +29,7 @@ setup(
             'red_zone_node = qr_detection.red_zone_node:main',
             'sim_down_camera_node = qr_detection.sim_down_camera_node:main',
             'sim_reference = qr_detection.sim_reference:main',
+            'live_view_node = qr_detection.live_view_node:main',
         ],
     },
 )

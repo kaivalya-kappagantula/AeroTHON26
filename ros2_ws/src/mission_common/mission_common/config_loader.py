@@ -136,6 +136,16 @@ def load_mission_config(node) -> MissionConfig:
     cfg.arena_match_tol_m     = _declare(node, "arena_match_tol_m", 1.0)    # match this close = over it
     cfg.arena_rescan_timeout_s = _declare(node, "arena_rescan_timeout_s", 15.0)
 
+    # ── Exit corridor, phase 5 (path_planner/exit_corridor.py) ───
+    # Corridor 1's far end mirrored across the line through the takeoff
+    # point = the exit corridor's arena-side entrance; the blue banner is
+    # searched for from exit_search_standoff_m further out in the arena.
+    # Not found -> the point shifted exit_search_shift_m each way along the
+    # corridor entrances (0 = no shifted searches); still not -> LAND.
+    cfg.exit_search_standoff_m  = _declare(node, "exit_search_standoff_m", 6.0)
+    cfg.exit_search_shift_m     = _declare(node, "exit_search_shift_m", 3.0)
+    cfg.exit_corridor_timeout_s = _declare(node, "exit_corridor_timeout_s", 600.0)
+
     # ── Payload drop ─────────────────────────────────────────────
     cfg.drop_arrival_tolerance_m = _declare(node, "drop_arrival_tolerance_m", 1.0)
     cfg.drop_arrival_timeout_s   = _declare(node, "drop_arrival_timeout_s", 30.0)

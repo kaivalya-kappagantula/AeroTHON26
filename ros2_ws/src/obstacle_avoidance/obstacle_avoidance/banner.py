@@ -1,4 +1,5 @@
-# banner.py — green entrance banner in the forward OAK-D colour image.
+# banner.py — corridor banner (green entrance, blue exit) in the forward
+# OAK-D colour image.
 #
 # Pure OpenCV/NumPy, no ROS (unit-tested in test/test_banner.py). The
 # detector and tracker are ~/green_detect.py's, unchanged, with the same
@@ -7,6 +8,11 @@
 # reject foliage. The tracker locks onto one blob and coasts through short
 # dropouts. Bearing/elevation are NOT computed here (green_detect used a fixed
 # HFOV): banner_node does it from the camera intrinsics and the FC attitude.
+#
+# The defaults are the green banner's. The blue exit banner runs the same
+# code with its own hue band (config/banner_blue.yaml): its pale test is Lab
+# b* (blue-yellow axis, b_min) instead of a*, and allow_top false keeps a
+# blue sky (a blob on the top edge) from being acquired.
 
 import math
 from dataclasses import dataclass
@@ -23,6 +29,7 @@ class BannerParams:
     v_min: int = 40
     a_min: int = 15             # also accept pale/glare green with Lab a* < -this; 0 = off
     v_floor: int = 30           # min brightness for the pale-green test
+    b_min: int = 0              # also accept pale/glare blue with Lab b* < -this; 0 = off
     min_area: float = 0.004     # fraction of frame
     min_solidity: float = 0.7   # blob area / convex hull area
     min_aspect: float = 0.0     # long/short side of rotated box; 0 = off
@@ -30,6 +37,7 @@ class BannerParams:
     max_edges: float = 0.10     # max fraction of edge pixels inside blob
     max_verts: int = 7          # max outline corners; trees are ragged
     allow_bottom: bool = False  # acquire blobs touching the bottom edge
+    allow_top: bool = True      # acquire blobs touching the top edge (blue: sky)
     gate: float = 0.2           # tracking search radius, fraction of width
     hold: int = 10              # frames to coast on the last fix when lost
     confirm: int = 3            # frames needed before reporting a lock
@@ -54,11 +62,13 @@ class Detector:
         # Glare, shade and oblique views wash out saturation, but Lab a* (green-red axis)
         # barely moves with brightness — so also accept clearly-green-but-pale pixels.
         mask = strong
-        if a.a_min > 0:
-            lab_a = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)[:, :, 1]
-            weak = cv2.bitwise_and(cv2.inRange(lab_a, 0, 128 - a.a_min),
-                                   cv2.inRange(hsv[:, :, 2], a.v_floor, 255))
-            mask = cv2.bitwise_or(strong, weak)
+        if a.a_min > 0 or a.b_min > 0:
+            lab = cv2.cvtColor(blur, cv2.COLOR_BGR2LAB)
+            bright = cv2.inRange(hsv[:, :, 2], a.v_floor, 255)
+            for ch, lim in ((1, a.a_min), (2, a.b_min)):
+                if lim > 0:
+                    weak = cv2.bitwise_and(cv2.inRange(lab[:, :, ch], 0, 128 - lim), bright)
+                    mask = cv2.bitwise_or(mask, weak)
         raw = cv2.bitwise_and(mask, hue)
         mask = cv2.morphologyEx(raw, cv2.MORPH_OPEN, self.k_open)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, self.k_close)
@@ -111,6 +121,7 @@ class Detector:
             bl, br = ((float(p[:, 0].mean()), float(p[:, 1].max())) for p in ends)
             cands.append(dict(area=area, area_frac=area / (w * h), bbox=(x, y, bw, bh),
                               solidity=solidity, aspect=aspect, edge=y + bh >= h - 2,
+                              top=y <= 1,
                               cut_left=x <= 1, cut_right=x + bw >= w - 1,
                               bottom_left=bl, bottom_right=br,
                               v_std=v_std, edge_d=edge_d, verts=verts,
@@ -143,7 +154,8 @@ class Tracker:
             if near:   # big and close wins; a tracked banner may slide onto the bottom edge
                 pick = max(near, key=lambda dc: dc[1]["area"] / (1.0 + dc[0] / gate))[1]
         else:
-            free = [c for c in cands if a.allow_bottom or not c["edge"]]
+            free = [c for c in cands if (a.allow_bottom or not c["edge"])
+                    and (a.allow_top or not c["top"])]
             if free:
                 pick = max(free, key=lambda c: c["area"] * c["solidity"])
 

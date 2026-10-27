@@ -37,6 +37,10 @@
 # Hops stay inside the box around the arena and the drone (no padding: the
 # arena edge is the fence). Altitude: arena_alt_m throughout.
 #
+# go_to(lat, lon): phase 5's transit to the exit corridor — the same flying
+# (around the known zones, red camera watching, stops and re-plans) to one
+# point, no sweep and no QR matching. Keeps the zones the sweep confirmed.
+#
 # Aborts are the mission's (_tick: RC switch, FC mode, battery, obstacle
 # sensor): MissionAbort propagates. Failures that leave the drone unsafe to
 # continue (red detector silent, speed rejected, arrival timeout) raise
@@ -454,12 +458,12 @@ class ArenaSearch:
                 break
         return best
 
-    def run(self, corners=None):
-        """Phase 3. Returns the matching QR's (lat, lon), or None."""
+    def _setup(self, corners=None):
+        """Arena frame, altitude, speed and the red-stop distances (zones
+        kept). Returns the sweep plan and how far ahead the camera sees."""
         cfg, node = self.cfg, self.node
         self.alt = float(cfg.arena_alt_m)
         self.speed = float(cfg.arena_sweep_speed_ms)
-        self.zones, self.stops, self._match, self._rescan = [], 0, None, False
         brake_m = self.speed * BRAKE_LATENCY_S + self.speed ** 2 / (2.0 * BRAKE_DECEL_MS2)
         self.near_m = float(cfg.arena_red_margin_m) + brake_m + NEAR_BUFFER_M
         ahead_m = (self.alt * math.tan(math.radians(cfg.down_cam_hfov_deg) / 2.0)
@@ -469,6 +473,44 @@ class ArenaSearch:
         sweep = best_sweep(corners or self.corners(), node.gps, w_max, cfg.arena_edge_margin_m)
         self.frame = sweep.frame
         self.yaw = self.frame.u_yaw_enu          # nose along the strips
+        return sweep, ahead_m
+
+    def _start_flying(self):
+        """Up to arena_alt_m where the drone is; the red detector must be live."""
+        node = self.node
+        node._climb_in_place(self.alt, self.yaw)
+        # ATTITUDE + GLOBAL_POSITION_INT feed red_zone_node's projection: at
+        # 20 Hz the telemetry gaps halve (a stale gap > 0.75 s silences it
+        # and the sweep brakes "blind"). Runtime request, as
+        # bcd_redzone_mission.py does — not a parameter.
+        mav.request_message_intervals(node, (30, 33), rate_hz=20.0)
+        if not self._wait_detector(10.0):
+            raise node.abort_type("failure", "arena: red_zone_node not reporting on "
+                                             "/red_zone/sighting — not flying blind")
+
+    def go_to(self, lat, lon, label):
+        """Fly to (lat, lon) at arena_alt_m around the known red zones, the red
+        camera watching (stop, confirm, re-plan as in the sweep). Returns True
+        on arrival, False if no route (e.g. the point is inside a zone's
+        margin)."""
+        if self.frame is None:
+            self._setup()
+        self._start_flying()
+        self._enter_speed()
+        self._sight_after = time.monotonic()
+        here = self._here()
+        start = escape_point(here, self._space(here))
+        goal = self.frame.from_gps(lat, lon)
+        r = self._fly_route(start, goal, label)
+        if r != "arrived":
+            self._log().warn(f"[arena] {label}: no route around the red zones")
+        return r == "arrived"
+
+    def run(self, corners=None):
+        """Phase 3. Returns the matching QR's (lat, lon), or None."""
+        cfg, node = self.cfg, self.node
+        self.zones, self.stops, self._match, self._rescan = [], 0, None, False
+        sweep, ahead_m = self._setup(corners)
         self._log().info(
             f"[arena] {self.frame.width:.0f} x {self.frame.height:.0f} m arena: "
             f"{len(sweep.segments)} strips {sweep.strip_width:.1f} m apart along "
@@ -487,15 +529,7 @@ class ArenaSearch:
                              f"stored {ref.get('time')})")
         deadline = time.time() + float(cfg.lawnmower_timeout_s)
 
-        node._climb_in_place(self.alt, self.yaw)
-        # ATTITUDE + GLOBAL_POSITION_INT feed red_zone_node's projection: at
-        # 20 Hz the telemetry gaps halve (a stale gap > 0.75 s silences it
-        # and the sweep brakes "blind"). Runtime request, as
-        # bcd_redzone_mission.py does — not a parameter.
-        mav.request_message_intervals(node, (30, 33), rate_hz=20.0)
-        if not self._wait_detector(10.0):
-            raise node.abort_type("failure", "arena: red_zone_node not reporting on "
-                                             "/red_zone/sighting — not sweeping blind")
+        self._start_flying()
         target = node.sm.mission_target_qr
         if target:
             node.delivery_id_pub.publish(String(data=target))

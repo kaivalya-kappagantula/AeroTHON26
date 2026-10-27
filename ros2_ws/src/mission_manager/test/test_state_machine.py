@@ -75,6 +75,21 @@ def test_entry_test_done_only_from_the_entry_corridor():
         sm.entry_test_done()
 
 
+def test_exit_corridor_test_flight_lands():
+    # exit_corridor_mission: take off -> (entry corridor) -> exit corridor -> land.
+    sm = MissionSM()
+    _run(sm, ["auto_activate", "airborne", "qr_scanned", "entry_complete",
+              "search_exhausted", "exit_test_done", "touchdown"])
+    assert sm.state_id == "LANDED"
+
+
+def test_exit_test_done_only_from_the_exit_corridor():
+    sm = MissionSM()
+    _run(sm, ["auto_activate", "airborne", "qr_scanned", "entry_complete"])
+    with pytest.raises(TransitionNotAllowed):
+        sm.exit_test_done()
+
+
 def test_landing_is_a_separate_phase_from_homing():
     # HOMING must not jump straight to LANDED (that disarmed in the air).
     sm = MissionSM()

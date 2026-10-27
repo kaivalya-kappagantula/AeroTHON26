@@ -1,6 +1,7 @@
-# banner_msg.py — wire format of /corridor/banner, shared by the publisher
-# (obstacle_avoidance banner_node) and the consumer (path_planner, entry
-# corridor). One source of truth for the field order.
+# banner_msg.py — wire format of /corridor/banner (green, entry corridor) and
+# /corridor/banner_blue (blue, exit corridor), shared by the publisher
+# (obstacle_avoidance banner_node) and the consumer (path_planner). One source
+# of truth for the field order.
 #
 # Carried as std_msgs/Float32MultiArray (no custom message package). NaN means
 # "not measured". Angles are in the LEVEL frame (FC pitch and roll removed),
@@ -44,6 +45,9 @@ FIELDS = (
 )
 
 NONE, HOLD, LOCK = 0, 1, 2
+
+TOPIC_GREEN = "/corridor/banner"        # entry corridor
+TOPIC_BLUE = "/corridor/banner_blue"    # exit corridor
 
 
 def encode(values: dict) -> Float32MultiArray:

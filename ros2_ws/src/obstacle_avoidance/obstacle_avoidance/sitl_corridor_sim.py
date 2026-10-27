@@ -19,6 +19,12 @@
 # cloth): its pixels are NaN in the depth image, so path_planner measures its
 # height from where the walls begin.
 #
+# Blue banner (exit corridor): the same size, on corridor 2's mouth — its
+# first waypoint end, the arena side it is entered from — sitting on
+# corridor 2's walls (+ banner_above_walls_m). Both corridors are rendered
+# into the one colour stream (nearest surface per pixel), so the green and
+# the blue banner_node each find their own banner in it.
+#
 # gps_drift_m / gps_drift_period_s add a slowly DRIFTING lateral error on top
 # (offset + drift * sin(2 pi t / period)): the walls move against the GPS
 # while the vehicle flies, as GPS wander does. 0 = off.
@@ -52,13 +58,15 @@ from std_msgs.msg import Float64, String
 from mission_common import mavros_utils as mav
 from obstacle_avoidance import geometry as g
 from obstacle_avoidance.corridor_render import (
+    BANNER_BGR,
+    BLUE_BANNER_BGR,
     COLOUR_CAMERA,
     Banner,
     Camera,
     Scene,
     banner_depth,
     render,
-    render_colour,
+    render_colour_depth,
 )
 
 _DA = ParameterDescriptor(type=ParameterType.PARAMETER_DOUBLE_ARRAY)
@@ -129,13 +137,16 @@ class SitlCorridorSim(Node):
                 f'[sitl_corridor_sim] corridor{i}: {sc.width:.2f} m wide, '
                 f'{sc.wall_height:.2f} m walls, {length:.1f} m long, '
                 f'{len(boxes)} obstacles {boxes}')
-        bottom = self.corridors[0]['scene'].wall_height + float(gp('banner_above_walls_m'))
         half = 0.5 * float(gp('banner_width_m'))
-        self.banner = Banner(x=0.0, y_min=-half, y_max=half, z_bottom=bottom,
-                             z_top=bottom + float(gp('banner_height_m')))
-        self.get_logger().info(
-            f'[sitl_corridor_sim] green banner on corridor1: {2 * half:.2f} m wide, '
-            f'{bottom:.2f}-{self.banner.z_top:.2f} m')
+        for c, name, colour in ((self.corridors[0], 'green', BANNER_BGR),
+                                (self.corridors[1], 'blue', BLUE_BANNER_BGR)):
+            bottom = c['scene'].wall_height + float(gp('banner_above_walls_m'))
+            c['banner'] = Banner(x=0.0, y_min=-half, y_max=half, z_bottom=bottom,
+                                 z_top=bottom + float(gp('banner_height_m')))
+            c['colour'] = colour
+            self.get_logger().info(
+                f"[sitl_corridor_sim] {name} banner on {c['name']}: {2 * half:.2f} m wide, "
+                f"{bottom:.2f}-{c['banner'].z_top:.2f} m")
         self.offset = float(gp('gps_offset_m'))
         self.drift = float(gp('gps_drift_m'))
         self.drift_period = max(1.0, float(gp('gps_drift_period_s')))
@@ -196,14 +207,22 @@ class SitlCorridorSim(Node):
         scene = c['scene'] if near else Scene(x_start=1e3, x_end=1e3 + 1.0)
         z_cam = max(self._alt, 0.05)
         z = render(scene, self.cam, (x, y, z_cam), yaw, self._pitch, self._roll)
-        if near and c is self.corridors[0]:
+        if near:
             # Plain cloth: no stereo depth on the banner, and none through it.
-            tb = banner_depth(self.banner, self.cam, (x, y, z_cam), yaw, self._pitch, self._roll)
+            tb = banner_depth(c['banner'], self.cam, (x, y, z_cam), yaw, self._pitch, self._roll)
             z[tb < np.nan_to_num(z, nan=np.inf)] = np.nan
-        # Colour: corridor 1 (the banner's) from wherever the vehicle is.
-        c1, x1, y1, yaw1 = poses[0]
-        bgr = render_colour(c1['scene'], self.banner, self.colour_cam, (x1, y1, z_cam), yaw1,
-                            self._pitch, self._roll)
+        # Colour: both corridors and their banners from wherever the vehicle
+        # is, the nearer surface per pixel.
+        bgr = depth = None
+        for ci, xi, yi, yawi in poses:
+            img, d = render_colour_depth(ci['scene'], ci['banner'], self.colour_cam,
+                                         (xi, yi, z_cam), yawi, self._pitch, self._roll,
+                                         ci['colour'])
+            if bgr is None:
+                bgr, depth = img, d
+            else:
+                nearer = d < depth
+                bgr[nearer], depth = img[nearer], np.minimum(depth, d)
         stamp = self.get_clock().now().to_msg()
         self.info_pub.publish(self._info(stamp, self.cam, 'oak_forward'))
         self.depth_pub.publish(self._image(z, stamp))
