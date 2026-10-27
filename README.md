@@ -5,8 +5,8 @@ Pi 5, talking to an ArduPilot (ArduCopter) Pixhawk through MAVROS.
 
 | Phase | What it does | Status |
 |---|---|---|
-| 1 | Gradual takeoff to 5 m, find + centre over the reference QR, read it and store it (by its text, or by its picture if it holds none) | SITL ✅, drone not yet |
-| 2 | Entry corridor: descend to 3 m, find the green banner (±90° sweep), line up on the walls under it, fly through, climb to 10 m | SITL ✅, drone not yet |
+| 1 | Gradual takeoff to 5 m, find + centre over the reference QR, read it and store it (by its text, or by its picture if it holds none) | SITL, drone not yet |
+| 2 | Entry corridor: descend to 3 m, find the green banner (±90° sweep), line up on the walls under it, fly through, climb to 10 m | SITL, drone not yet |
 | later | Arena search, payload drop, corridor 2, return home | in progress |
 
 ## Quick start
