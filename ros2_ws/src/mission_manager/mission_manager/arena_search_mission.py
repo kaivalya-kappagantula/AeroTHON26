@@ -10,7 +10,8 @@
 #   3. gradual takeoff, holding the placed heading: armed ARM_WAIT_S on the
 #      ground, lift-off to takeoff_liftoff_alt_m, then a steady
 #      takeoff_climb_rate_ms climb over the lift-off point to
-#      cruise_altitude_m and on to arena_alt_m                (mission_node)
+#      cruise_altitude_m and on to arena_alt_m (straight to arena_alt_m
+#      when that is lower: no climb above the sweep)          (mission_node)
 #   4. arena search: BCD sweep, never over red (stop, confirm, re-plan
 #      around), matching every QR against the stored reference
 #   5. match: over it, hover arena_test_hover_s, LAND there. No match after
@@ -106,10 +107,10 @@ class ArenaSearchMission(MissionNode):
             self._wait_for_start()
             self.sm.auto_activate()
             self._preflight()
-            self._takeoff()
+            arena_alt = float(self.cfg.arena_alt_m)
+            self._takeoff(min(float(self.cfg.cruise_altitude_m), arena_alt))
             # Same steady climb on up to the sweep altitude (arena.run would
             # otherwise jump the altitude target straight to it).
-            arena_alt = float(self.cfg.arena_alt_m)
             if self.rel_alt is not None and arena_alt - self.rel_alt > self.cfg.altitude_tolerance_m:
                 self._climb_gradually(arena_alt)
                 self.get_logger().info(f"[arena_search_mission] At {self.rel_alt:.2f} m")

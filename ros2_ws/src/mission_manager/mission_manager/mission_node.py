@@ -357,16 +357,17 @@ class MissionNode(Node):
                     f"(> {limit:.2f} m: vibration? weak GPS/flow?) — not taking off")
             time.sleep(0.1)
 
-    def _takeoff(self):
-        """Gradual takeoff, as testing/waypoint_mission.py:
+    def _takeoff(self, alt=None):
+        """Gradual takeoff to alt (default cruise_altitude_m), as
+        testing/waypoint_mission.py:
           1. the position estimate must hold still (takeoff_steady_time_s)
           2. GUIDED, arm, sit armed ARM_WAIT_S (motors spool; drift still checked)
           3. lift off to takeoff_liftoff_alt_m (MAV_CMD_NAV_TAKEOFF)
-          4. slide the altitude target up to cruise_altitude_m at
-             takeoff_climb_rate_ms over the lift-off point, holding the
-             heading the drone was placed with"""
+          4. slide the altitude target up to alt at takeoff_climb_rate_ms
+             over the lift-off point, holding the heading the drone was
+             placed with"""
         cfg = self.cfg
-        alt = cfg.cruise_altitude_m
+        alt = cfg.cruise_altitude_m if alt is None else alt
         first = min(cfg.takeoff_liftoff_alt_m, alt)
         # A cold FC has no local position until the EKF origin is set (~30-60 s).
         if not self._wait_for(lambda: self.local_xy is not None and self.heading_deg is not None,
