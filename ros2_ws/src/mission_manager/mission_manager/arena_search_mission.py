@@ -126,10 +126,15 @@ class ArenaSearchMission(MissionNode):
             self.sm.auto_activate()
             self._preflight()
             arena_alt = float(self.cfg.arena_alt_m)
-            self._takeoff(min(float(self.cfg.cruise_altitude_m), arena_alt))
+            # Reading the reference: take off to its altitude (ref_alt; the
+            # sweep then goes straight down/up to arena_alt). Else the lower.
+            scan_ref = bool(self._p("arena_test_scan_reference"))
+            self._takeoff(float(self.cfg.cruise_altitude_m) if scan_ref
+                          else min(float(self.cfg.cruise_altitude_m), arena_alt))
             # Same steady climb on up to the sweep altitude (arena.run would
             # otherwise jump the altitude target straight to it).
-            if self.rel_alt is not None and arena_alt - self.rel_alt > self.cfg.altitude_tolerance_m:
+            if not scan_ref and self.rel_alt is not None and \
+                    arena_alt - self.rel_alt > self.cfg.altitude_tolerance_m:
                 self._climb_gradually(arena_alt)
                 self.get_logger().info(f"[arena_search_mission] At {self.rel_alt:.2f} m")
 

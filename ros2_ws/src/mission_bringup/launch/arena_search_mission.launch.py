@@ -25,6 +25,10 @@
 #                   place it <= ~1 m ahead, nose at it), then sweep. Use
 #                   offset:=3 so the reference QR lies outside the arena.
 #   alt             sweep altitude (m)                       [arena_alt_m]
+#   ref_alt         scan_ref: read the reference QR at this altitude (m),
+#                   then straight down/up to alt for the sweep ("" = alt).
+#                   A 1 m QR needs height: at 2 m the camera sees only
+#                   +-0.77 m along the nose, at 3 m +-1.15 m
 #   speed           sweep speed (m/s)                        [arena_sweep_speed_ms]
 #   hover           hover over the match before landing (s)
 #   use_config      true = fly arena_corners_lat/lon from mission_params.yaml
@@ -119,6 +123,7 @@ def generate_launch_description():
         DeclareLaunchArgument("start", default_value="centre", choices=["centre", "corner"]),
         DeclareLaunchArgument("red_ignore", default_value=""),
         DeclareLaunchArgument("alt", default_value="10.0"),
+        DeclareLaunchArgument("ref_alt", default_value=""),
         DeclareLaunchArgument("speed", default_value="0.5"),
         DeclareLaunchArgument("hover", default_value="5.0"),
         DeclareLaunchArgument("use_config", default_value="false", choices=["true", "false"]),
@@ -200,10 +205,11 @@ def generate_launch_description():
             "arena_test_start": LaunchConfiguration("start"),
             "arena_test_scan_reference": ParameterValue(LaunchConfiguration("scan_ref"),
                                                         value_type=bool),
-            # phase 1 reads the reference at cruise_altitude_m: the sweep's
-            # altitude when it is flown here, else the yaml's
+            # phase 1 reads the reference at cruise_altitude_m: ref_alt (or
+            # the sweep's altitude) when it is flown here, else the yaml's
             "cruise_altitude_m": ParameterValue(PythonExpression(
-                ["float('", LaunchConfiguration("alt"), "') if '",
+                ["float('", LaunchConfiguration("ref_alt"), "' or '",
+                 LaunchConfiguration("alt"), "') if '",
                  LaunchConfiguration("scan_ref"), "' == 'true' else ",
                  _yaml_value(mission_params, "cruise_altitude_m")]), value_type=float),
             "arena_alt_m": _float("alt"),
