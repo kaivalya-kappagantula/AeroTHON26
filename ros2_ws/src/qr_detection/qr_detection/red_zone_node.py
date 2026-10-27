@@ -8,7 +8,13 @@
 #        /mavros/imu/data, /mavros/global_position/global, /mavros/global_position/rel_alt
 #   out: /red_zone/sighting  (std_msgs/Bool, every accepted frame: True when
 #                             red that is NOT part of a known zone is in view)
-#        /red_zone/zones     (std_msgs/String JSON, latched, after each confirm)
+#        /red_zone/new_red_dist (std_msgs/Float32, every accepted frame: metres
+#                             from the drone's nadir to the nearest such red,
+#                             -1 = none — the arena search brakes only when
+#                             it comes close)
+#        /red_zone/zones     (std_msgs/String JSON, latched, after each confirm
+#                             — and, with grow_known_zones, whenever a known
+#                             zone grows in flight)
 #   srv: /red_zone/confirm   (std_srvs/Trigger, blocks window_s: accumulate
 #                             while the drone hovers, merge into the map,
 #                             reply with the JSON below)
@@ -16,6 +22,15 @@
 # JSON: {"zones": [[[lat, lon], ...], ...], "new_area_m2": float, "frames": int}
 # Zones are the RED outline (grown one 0.25 m cell for discretisation), NOT
 # inflated by a safety margin — the mission applies its own margin.
+#
+# grow_known_zones (default false; the arena search turns it on — there is
+# only one red mat): red CONNECTED to a confirmed zone is added to it while
+# flying instead of being a new sighting (RedZoneMap grow_known), so a mat
+# that comes into view slice by slice needs one hover-confirm, not one per
+# slice. Red not connected to a known zone still is a new sighting.
+# confirm_in_flight (default false; needs grow_known_zones): red not connected
+# to a known zone is confirmed in flight too, with the same evidence rule, so
+# the first sight of the mat needs no hover either (RedZoneMap).
 #
 # No message on /red_zone/sighting means "blind" (camera dead, telemetry
 # stale, too low or too tilted): the mission treats silence as unsafe.
@@ -40,7 +55,7 @@ from rclpy.qos import (QoSProfile, ReliabilityPolicy, DurabilityPolicy,
                        HistoryPolicy)
 
 from sensor_msgs.msg import Image, Imu, NavSatFix, NavSatStatus
-from std_msgs.msg import Bool, Float64, String
+from std_msgs.msg import Bool, Float32, Float64, String
 from std_srvs.srv import Trigger
 
 from qr_detection.red_zone import (CameraModel, RedConfig, RedZoneMap,
@@ -112,9 +127,14 @@ class RedZoneNode(Node):
         # Red zones are large: half resolution is plenty and ~4x cheaper,
         # leaving the CPU to the QR scanner on the same frames.
         self.process_width = int(gp("process_width", 640))
+        self.grow_known = bool(gp("grow_known_zones", False))
+        self.confirm_in_flight = bool(gp("confirm_in_flight", False))
 
         self.map = RedZoneMap(min_hit_ratio=self.min_hit_ratio,
-                              min_area_m2=self.zone_min_m2)
+                              min_area_m2=self.zone_min_m2, grow_known=self.grow_known,
+                              confirm_in_flight=self.confirm_in_flight)
+        self._grown_pub_t = 0.0
+        self._grown_pending = 0.0      # grown since the last /red_zone/zones
         self.perception: RedZonePerception | None = None   # sized from the first frame
         self._map_lock = threading.Lock()
 
@@ -137,6 +157,7 @@ class RedZoneNode(Node):
             Float64, "/mavros/global_position/rel_alt", self._alt_cb, qos)
 
         self.sighting_pub = self.create_publisher(Bool, "/red_zone/sighting", 10)
+        self.dist_pub = self.create_publisher(Float32, "/red_zone/new_red_dist", 10)
         latched = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              history=HistoryPolicy.KEEP_LAST, depth=1)
@@ -151,7 +172,9 @@ class RedZoneNode(Node):
         self.get_logger().info(
             f"[red_zone] source={self.source}"
             + (f" ({self.topic})" if self.source != "rpicam" else "")
-            + f", mount_yaw={self.mount_yaw:.0f} deg, window {self.window_s:.1f} s")
+            + f", mount_yaw={self.mount_yaw:.0f} deg, window {self.window_s:.1f} s"
+            + (", growing known zones in flight" if self.grow_known else "")
+            + (", confirming new red in flight" if self.map.confirm_in_flight else ""))
 
         self._running = True
         self._status = "waiting for frames"
@@ -243,8 +266,21 @@ class RedZoneNode(Node):
                         self.get_logger().warn(f"[red_zone] {self._status}",
                                                throttle_duration_sec=1.0)
                     continue
+                self._grown_pending += res.grown_m2
+                if self._grown_pending > 0.0 and time.monotonic() - self._grown_pub_t > 0.3:
+                    # (at most ~3 updates/s; growth in between is sent with
+                    # the next accepted frame, never dropped)
+                    self._grown_pub_t = time.monotonic()
+                    with self._map_lock:
+                        polys = self.map.zone_polygons_ne()
+                    self._publish_zones(polys, self._grown_pending, 0)
+                    self.get_logger().info(
+                        f"[red_zone] zone confirmed/grown in flight: "
+                        f"+{self._grown_pending:.2f} m^2", throttle_duration_sec=1.0)
+                    self._grown_pending = 0.0
                 seen = res.new_red_m2 >= self.min_red_m2
                 self.sighting_pub.publish(Bool(data=seen))
+                self.dist_pub.publish(Float32(data=float(res.new_red_dist_m)))
                 self._status = (f"live, pos N {st.n:.2f} E {st.e:.2f} agl {st.agl:.2f}"
                                 f", new red {res.new_red_m2:.2f} m^2")
                 if seen:
@@ -272,6 +308,17 @@ class RedZoneNode(Node):
                             f"(need {self.confirm_min_frames}) — camera or telemetry not live")
             self.get_logger().error(f"[red_zone] confirm FAILED: {resp.message}")
             return resp
+        payload = self._publish_zones(polys, new_area, frames)
+        resp.success = True
+        resp.message = payload
+        self.get_logger().info(
+            f"[red_zone] confirm: {frames} frames, +{new_area:.2f} m^2 red, "
+            f"{len(polys)} zone(s) on the map")
+        return resp
+
+    def _publish_zones(self, polys, new_area, frames) -> str:
+        """Publish the confirmed zones (lat/lon) on /red_zone/zones; returns
+        the JSON."""
         lat0, lon0 = self._origin
         m_per_deg_lon = _M_PER_DEG_LAT * math.cos(math.radians(lat0))
         zones = [[[lat0 + n / _M_PER_DEG_LAT, lon0 + e / m_per_deg_lon]
@@ -279,12 +326,7 @@ class RedZoneNode(Node):
         payload = json.dumps({"zones": zones, "new_area_m2": round(new_area, 3),
                               "frames": frames})
         self.zones_pub.publish(String(data=payload))
-        resp.success = True
-        resp.message = payload
-        self.get_logger().info(
-            f"[red_zone] confirm: {frames} frames, +{new_area:.2f} m^2 red, "
-            f"{len(polys)} zone(s) on the map")
-        return resp
+        return payload
 
     def destroy_node(self):
         self._running = False

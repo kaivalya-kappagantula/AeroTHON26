@@ -3,12 +3,15 @@
 Autonomous mission stack for the AeroTHON 2026 drone: ROS 2 Jazzy on a Raspberry
 Pi 5, talking to an ArduPilot (ArduCopter) Pixhawk through MAVROS.
 
+**New to the project? Start with [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md)** — the
+mission, the architecture, how every phase works and why, testing, and what's open.
+
 | Phase | What it does | Status |
 |---|---|---|
-| 1 | Gradual takeoff to 5 m, find + centre over the reference QR, read it and store it (by its text, or by its picture if it holds none) | SITL, drone not yet |
-| 2 | Entry corridor: descend to 3 m, find the green banner (±90° sweep), line up on the walls under it, fly through, climb to 10 m | SITL, drone not yet |
-| later | Arena search, payload drop, corridor 2, return home | in progress |
-
+| 1 | Gradual takeoff to 5 m, find + centre over the reference QR, read it and store it (by its text, or by its picture if it holds none) | SITL ✅, drone not yet |
+| 2 | Entry corridor: descend to 3 m, find the green banner (±90° sweep), line up on the walls under it, fly through, climb to 10 m | SITL ✅, drone not yet |
+| 3 | Arena search: sweep the arena at 10 m (strips sized so a 1 m QR always fits), never over the red mat (stop, confirm, re-plan around it with a 2 m margin), find the QR that matches the reference | SITL ✅, drone not yet |
+| later | Payload drop, corridor 2, return home | in progress |
 ## Quick start
 
 Needs **Ubuntu 24.04 + ROS 2 Jazzy** ([install guide](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html)).
@@ -37,6 +40,7 @@ phase, then lands.
 | Takeoff only (climb to 5 m, hover 10 s, land) | `ros2 launch mission_bringup takeoff_test.launch.py` | `ros2 launch mission_bringup takeoff_test.launch.py sim:=true` |
 | Phase 1 (QR) | `ros2 launch mission_bringup qr_scan_mission.launch.py` | `ros2 launch mission_bringup qr_scan_mission.launch.py sim:=true` |
 | Phase 2 (entry corridor) | `ros2 launch mission_bringup entry_corridor.launch.py takeoff_alt:=5` | `ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true mission:=entry_corridor` |
+| Phase 3 (arena search, 25 x 25 m test area) | `ros2 launch mission_bringup arena_search_mission.launch.py` | `ros2 launch mission_bringup arena_search_mission.launch.py sim:=true` |
 | Whole mission | `ros2 launch mission_bringup mission.launch.py launch_mavros:=true launch_camera:=true` | `ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true` |
 
 On the drone:
@@ -49,7 +53,10 @@ On the drone:
   (`FENCE_ALT_MAX`) allows it, and that the sky above the corridor exit is clear.
 
 The stored reference QR ends up in `~/aerothon_captures/reference_qr.json` (+ `.png`
-and a snapshot).
+and a snapshot). The phase 3 test loads it from there, so fly (or bench-run) phase 1
+first. For phase 3 place the drone at a corner of the test area: the area runs ahead
+along its nose and to its right. On competition day put the arena's 4 GPS corners in
+`arena_corners_lat` / `arena_corners_lon` (`mission_params.yaml`).
 
 ## SITL (laptop)
 

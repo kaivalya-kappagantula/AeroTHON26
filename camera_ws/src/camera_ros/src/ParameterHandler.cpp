@@ -6,6 +6,7 @@
 #include "types.hpp"
 #include <cstddef>
 #include <libcamera/base/span.h>
+#include <span>
 #include <libcamera/control_ids.h>
 #include <libcamera/controls.h>
 #include <rcl_interfaces/msg/floating_point_range.hpp>
@@ -107,7 +108,7 @@ ParameterHandler::declare(const libcamera::ControlInfoMap &controls)
     }
 
     const bool ctrl_scalar = (extent == 0);
-    const bool ctrl_dynamic = (extent == libcamera::dynamic_extent);
+    const bool ctrl_dynamic = (extent == std::dynamic_extent);
     const bool ctrl_fixed = !(ctrl_scalar || ctrl_dynamic);
 
     if (ctrl_fixed && !cv_def.isArray() && !cv_def.isNone()) {
@@ -401,7 +402,7 @@ ParameterHandler::validate_new_parameters(const std::vector<rclcpp::Parameter> &
     // check array dimension
     const std::size_t extent = get_extent(id);
     if (value.isArray() &&
-        (extent != libcamera::dynamic_extent) &&
+        (extent != std::dynamic_extent) &&
         (value.numElements() != extent)) {
       msgs_valid_check.push_back(
         parameter.get_name() + ": array dimensions mismatch, expected " +

@@ -33,6 +33,7 @@ from sensor_msgs.msg import BatteryState, NavSatFix, NavSatStatus
 from mission_common import mavros_utils as mav
 from mission_common import srv_helpers as srv
 from mission_common.config_loader import load_mission_config
+from mission_manager.arena_search import ArenaSearch
 from mission_manager.reference_qr import ReferenceQr
 from mission_manager.state_machine import MissionSM
 
@@ -62,6 +63,7 @@ class MissionAbort(Exception):
 
 
 class MissionNode(Node):
+    abort_type = MissionAbort       # for the phase modules (no circular import)
     def __init__(self):
         super().__init__("mission_node")
 
@@ -107,7 +109,6 @@ class MissionNode(Node):
         self._airborne = False
         self._landing = False           # we commanded LAND: mode change expected
         self._mission_complete = False
-        self._qr_match = None           # (lat, lon) of the confirmed target QR
 
         self.create_subscription(MavrosState, "/mavros/state", self._mavros_state_cb, mavros_qos)
         self.create_subscription(BatteryState, "/mavros/battery", self._battery_cb, mavros_qos)
@@ -118,12 +119,12 @@ class MissionNode(Node):
                                  self._heading_cb, mavros_qos)
         self.create_subscription(PoseStamped, "/mavros/local_position/pose",
                                  self._local_pose_cb, mavros_qos)
-        self.create_subscription(String, "/qr/detection", self._qr_detection_cb, 10)
         # coverage_guard publishes these RELIABLE at 10 Hz.
         self.create_subscription(Bool, "/avoidance/sensor_live", self._sensor_live_cb, 10)
         self.create_subscription(Bool, "/avoidance/coverage_ok", self._coverage_ok_cb, 10)
 
         self.create_timer(1.0 / self.cfg.tick_rate_hz, self._publish_telemetry)
+        self.arena = ArenaSearch(self)          # phase 3 (subscribes now)
 
         self._mission_thread = threading.Thread(target=self._run_mission, daemon=True)
         self._mission_thread.start()
@@ -174,25 +175,6 @@ class MissionNode(Node):
 
     def _coverage_ok_cb(self, msg: Bool):
         self._coverage_ok = bool(msg.data)
-
-    def _qr_detection_cb(self, msg: String):
-        # Format from qr_scanner_node: "content|qr_lat|qr_lon", published only
-        # after the confirmation gate fires. Only record it; the mission
-        # thread acts on it.
-        if self.sm.state_id != "ARENA_SEARCH" or self._qr_match is not None:
-            return
-        try:
-            content, lat, lon = msg.data.split("|")
-            lat, lon = float(lat), float(lon)
-        except ValueError:
-            self.get_logger().warn(f"[mission_node] Malformed QR detection: '{msg.data}'")
-            return
-        if content == self.sm.mission_target_qr:
-            self.get_logger().info(
-                f"[mission_node] QR MATCHED '{content}' at ({lat:.7f}, {lon:.7f})")
-            self._qr_match = (lat, lon)
-        else:
-            self.get_logger().info(f"[mission_node] QR '{content}' seen — not the target")
 
     def _request_abort(self, kind: str, reason: str):
         if self._abort is None:
@@ -323,6 +305,8 @@ class MissionNode(Node):
         # ArduPilot only streams what is requested (SITL --no-mavproxy) or
         # what SRx_ params enable (hardware). Ask explicitly for what we use.
         mav.request_message_intervals(self, rate_hz=self.cfg.stream_rate_hz)
+        if not mav.apply_throttle_cap(self):
+            raise MissionAbort("failure", "throttle cap not confirmed — refusing to fly")
 
         if self.cfg.require_rc_switch:
             self.get_logger().info(
@@ -516,44 +500,6 @@ class MissionNode(Node):
                 self.cfg.altitude_timeout_s, f"altitude {alt} m"):
             self.get_logger().warn(f"[mission_node] {alt} m not reached — continuing")
 
-    def _arena_search(self):
-        """Run the lawnmower until the target QR is confirmed or the pattern ends.
-        Returns the QR (lat, lon) or None."""
-        self._qr_match = None
-        self.delivery_id_pub.publish(String(data=self.sm.mission_target_qr))
-        srv.call_trigger(self, srv.SRV_START_QR_SCAN, call_timeout=self.cfg.service_timeout_s)
-
-        result = {}
-
-        def worker():
-            try:
-                result["res"] = srv.call_trigger(
-                    self, srv.SRV_RUN_LAWNMOWER, call_timeout=self.cfg.lawnmower_timeout_s + 30.0)
-            except Exception as e:
-                result["err"] = e
-
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
-        try:
-            while t.is_alive() and self._qr_match is None:
-                self._tick()
-                time.sleep(0.2)
-        except MissionAbort:
-            self._stop_planner()
-            raise
-
-        if self._qr_match is not None:
-            self._stop_planner()           # ends the lawnmower call
-            t.join(timeout=5.0)
-            return self._qr_match
-
-        res = result.get("res")
-        if res is not None and not res.success and res.message.startswith("SENSOR"):
-            raise MissionAbort("failure", f"arena search: {res.message}")
-        # Pattern finished: give a confirmation that is mid-gate a moment.
-        self._wait_for(lambda: self._qr_match is not None, 2.0, "late QR confirmation")
-        return self._qr_match
-
     def _drop_payload(self, qr_lat, qr_lon):
         alt = self.cfg.drop_altitude_m
         if not self._goto_and_wait(qr_lat, qr_lon, alt, self.cfg.drop_arrival_tolerance_m,
@@ -602,9 +548,10 @@ class MissionNode(Node):
             self._entry_corridor_phase()
 
             self.sm.entry_complete()
+            # Phase 3: the arena search (no reference QR -> nothing to match)
             target = None
             if self.sm.mission_target_qr is not None:
-                target = self._arena_search()
+                target = self.arena.run()
             if target is not None:
                 self.sm.qr_matched()
                 self._drop_payload(*target)

@@ -16,6 +16,7 @@
 #   TAKEOFF -> LANDING            (takeoff_test_done: takeoff_test)
 #   SCAN_REFERENCE_QR -> LANDING  (qr_test_done: qr_scan_mission_node)
 #   ENTRY_CORRIDOR -> LANDING     (entry_test_done: entry_corridor_mission)
+#   ARENA_SEARCH / TARGET_FOUND -> LANDING  (arena_test_done: arena_search_mission)
 #
 # Phase 1 = TAKEOFF (gradual, to cruise altitude) + SCAN_REFERENCE_QR (read
 # in the air over the launch point and stored). qr_scanned leaves the QR
@@ -67,6 +68,7 @@ class MissionSM(StateMachine):
     takeoff_test_done     = TAKEOFF.to(LANDING)
     qr_test_done          = SCAN_REFERENCE_QR.to(LANDING)
     entry_test_done       = ENTRY_CORRIDOR.to(LANDING)
+    arena_test_done       = ARENA_SEARCH.to(LANDING) | TARGET_FOUND.to(LANDING)
 
     abort = (
         IDLE.to(RC_MODE) |

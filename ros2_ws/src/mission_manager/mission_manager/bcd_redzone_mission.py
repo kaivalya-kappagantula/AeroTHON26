@@ -33,11 +33,9 @@
 # Frame: local ENU metres about the takeoff point, x = East, y = North. The
 # arena spans [area_x0_m, +area_width_m] East and [area_y0_m, +area_height_m]
 # North; with the defaults (0, 0) the takeoff point is its SOUTH-WEST corner.
-# FCU PARAMETERS ARE NEVER WRITTEN (same runtime-only commands as
+# FCU PARAMETERS ARE NEVER WRITTEN except the throttle cap (same commands as
 # bcd_sweep_mission.py). Any failed step after arming -> LAND in place. The
 # RC transmitter (mode switch) is the manual abort; Ctrl+C does NOT land.
-#
-# qr_bcd_mission.py builds the full QR mission on this class.
 #
 # Usage (MAVROS and red_zone_node running):
 #   ros2 run mission_manager bcd_redzone_mission
@@ -620,6 +618,9 @@ class BcdRedZoneMission(Node):
             # ATTITUDE + GLOBAL_POSITION_INT feed the red-zone projection:
             # 20 Hz halves the telemetry gaps (runtime request, not a param)
             mav.request_message_intervals(self, (30, 33), rate_hz=20.0)
+            if not mav.apply_throttle_cap(self):
+                self._result = False
+                return
             if not self._acquire_home():
                 self._result = False
                 return

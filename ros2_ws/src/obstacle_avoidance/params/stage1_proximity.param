@@ -11,3 +11,5 @@ PRX1_TYPE        2
 # version-specific (PRX1_YAWCORR on some builds) and MAVProxy rejects an
 # unknown name. It defaults to 0 = no correction, which is what we want since
 # we send body-frame. Gate 1C verifies this empirically.
+# Throttle cap: motor output ceiling for every flight (was 0.95).
+MOT_SPIN_MAX     0.80

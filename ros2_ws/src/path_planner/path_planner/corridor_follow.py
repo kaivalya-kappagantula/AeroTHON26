@@ -53,6 +53,15 @@ class FollowParams:
     max_lateral_step_m: float = 0.20   # per target (0.30 overshot ~0.13 m
                                        # against ~0.3 s perception lag, SITL)
     align_tol_m: float = 0.10
+    # Centring first: off the planned lateral position by e beyond align_tol_m,
+    # the forward step shrinks linearly to centre_min_advance of the lookahead
+    # at e = centre_slow_m, so more of the speed goes sideways. GPS drift (and wind the FC does not fully
+    # reject) moves the drone against the walls; at full forward step the
+    # sideways correction (proportional, <= max_lateral_step_m per 0.8 m) is
+    # slower than that drift and the drone settled ~0.5 m off centre in SITL
+    # (GPS error swinging +-0.5 m over 20 s).
+    centre_slow_m: float = 0.30
+    centre_min_advance: float = 0.25
     entry_align_tol_m: float = 0.15    # lined up before entering the mouth
     mouth_stop_m: float = 0.5
     obstacle_length_m: float = 1.0     # assumed depth (only the face is seen)
@@ -252,6 +261,8 @@ class Command:
     lateral: float          # metres to the LEFT (vehicle-relative step)
     alt: float              # absolute altitude target (m above home)
     mode: str               # centre | pass_left | pass_right | climb | climb_probe | blocked
+    clear: bool = True      # forward step not limited by an obstacle or the mouth
+                            # (centring may still shorten it)
 
 
 def _target_for(o, half, y_lim, need, alt, nominal_alt, p):
@@ -311,9 +322,13 @@ def plan(track: CorridorTracker, obstacles, s: float, alt: float,
     else:
         y_target, alt_target, mode = 0.0, nominal_alt, "centre"
 
-    advance = p.lookahead_m
+    off = abs(y_target - y_vehicle)
+    excess = max(0.0, off - p.align_tol_m) / max(p.centre_slow_m - p.align_tol_m, 1e-6)
+    advance = p.lookahead_m * max(p.centre_min_advance, 1.0 - excess)
+    clear = True
     if _ok(mouth_s) and s < mouth_s and abs(y_target - y_vehicle) > p.entry_align_tol_m:
         advance = _clamp(mouth_s - s - p.mouth_stop_m, 0.0, p.lookahead_m)
+        clear = False
 
     prev_pass = None
     for o in obstacles:
@@ -327,6 +342,7 @@ def plan(track: CorridorTracker, obstacles, s: float, alt: float,
                 mode = "blocked"     # too close behind the previous one
         if not lined_up:
             advance = min(advance, _clamp(stop - s, 0.0, p.lookahead_m))
+            clear = False
         prev_pass = o.s_front + p.obstacle_length_m + p.pass_margin_m
     if mode == "blocked":
         alt_target = max(nominal_alt, min(alt, p.max_altitude_m))
@@ -336,6 +352,7 @@ def plan(track: CorridorTracker, obstacles, s: float, alt: float,
         lateral=_clamp(y_target - y_vehicle, -p.max_lateral_step_m, p.max_lateral_step_m),
         alt=alt_target,
         mode=mode,
+        clear=clear and mode != "blocked",
     )
 
 

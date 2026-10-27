@@ -6,7 +6,7 @@
 # Starts: MAVROS, the downward Cam3 (camera_ros -> /down_frame), red_zone_node
 # and bcd_redzone_mission. The takeoff point is the SOUTH-WEST corner of the
 # area; the area extends East (width) and North (height). For the full QR
-# mission use qr_bcd_mission.launch.py.
+# search use arena_search_mission.launch.py.
 #
 #   area_w, area_h  sweep area (m)
 #   alt             sweep altitude (m)

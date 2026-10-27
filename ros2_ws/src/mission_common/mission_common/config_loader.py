@@ -121,6 +121,21 @@ def load_mission_config(node) -> MissionConfig:
     # phases set their own altitudes).
     cfg.post_entry_alt_m      = _declare(node, "post_entry_alt_m", 10.0)
 
+    # ── Arena search, phase 3 (mission_manager/arena_search.py) ──
+    # The arena's 4 GPS corners in order around it (competition day). All
+    # zero = not set: the arena_width_m x arena_height_m rectangle at
+    # origin_lat/lon is used instead.
+    cfg.arena_corners_lat     = _declare(node, "arena_corners_lat", [0.0, 0.0, 0.0, 0.0])
+    cfg.arena_corners_lon     = _declare(node, "arena_corners_lon", [0.0, 0.0, 0.0, 0.0])
+    cfg.arena_alt_m           = _declare(node, "arena_alt_m", 10.0)
+    cfg.arena_sweep_speed_ms  = _declare(node, "arena_sweep_speed_ms", 0.5)
+    cfg.arena_red_margin_m    = _declare(node, "arena_red_margin_m", 2.0)   # from the red mat
+    cfg.arena_edge_margin_m   = _declare(node, "arena_edge_margin_m", 1.0)  # strips inside the edge
+    cfg.arena_qr_size_m       = _declare(node, "arena_qr_size_m", 1.0)      # sets the strip spacing
+    cfg.arena_match_passes    = _declare(node, "arena_match_passes", 2)     # fly over + rescan
+    cfg.arena_match_tol_m     = _declare(node, "arena_match_tol_m", 1.0)    # match this close = over it
+    cfg.arena_rescan_timeout_s = _declare(node, "arena_rescan_timeout_s", 15.0)
+
     # ── Payload drop ─────────────────────────────────────────────
     cfg.drop_arrival_tolerance_m = _declare(node, "drop_arrival_tolerance_m", 1.0)
     cfg.drop_arrival_timeout_s   = _declare(node, "drop_arrival_timeout_s", 30.0)

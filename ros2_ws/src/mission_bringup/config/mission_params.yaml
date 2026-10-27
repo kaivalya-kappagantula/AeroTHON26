@@ -2,6 +2,7 @@
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
 # ║  UPDATE THESE ON COMPETITION DAY:                                ║
+# ║    - arena_corners_lat / _lon (the arena's 4 GPS corners)        ║
 # ║    - origin_lat / origin_lon  (GPS origin of the arena)          ║
 # ║    - geofence_points          (arena boundary GPS polygon)       ║
 # ║    - red_zone_N_x / _y        (no-fly zone vertices)             ║
@@ -77,6 +78,19 @@ mission_node:
     corridor_start_alt_m: 3.0
     # Phase 2 end: climb straight up to this once past the entry corridor.
     post_entry_alt_m: 10.0
+    # Phase 3, arena search (mission_manager/arena_search.py). COMPETITION
+    # DAY: the arena's 4 GPS corners, in order around it. All zero = use
+    # the arena_width_m x arena_height_m rectangle at origin_lat/lon.
+    arena_corners_lat: [0.0, 0.0, 0.0, 0.0]
+    arena_corners_lon: [0.0, 0.0, 0.0, 0.0]
+    arena_alt_m: 10.0
+    arena_sweep_speed_ms: 0.5
+    arena_red_margin_m: 2.0           # keep this far from the red mat's edge
+    arena_edge_margin_m: 1.0          # strips stay this far inside the arena edge
+    arena_qr_size_m: 1.0              # strips spaced so a whole QR fits in the frame
+    arena_match_passes: 2             # fly over the match + scan again, up to this often
+    arena_match_tol_m: 1.0
+    arena_rescan_timeout_s: 15.0
     # Drop: fly over the projected QR position, settle, release.
     drop_arrival_tolerance_m: 1.0
     drop_arrival_timeout_s: 30.0
@@ -131,6 +145,11 @@ path_planner_node:
                                   # tops: above them the walls leave the slice
                                   # and the leg holds, then lands.
     corridor_follow_speed_ms: 0.5 # stage 0.3 -> 0.5 on hardware
+    # Centring first (NEW): more than 0.10 m off centre, the forward step
+    # shrinks linearly to min_advance of the lookahead at centre_slow_m, so
+    # more of the speed goes sideways against GPS drift / wind.
+    corridor_centre_slow_m: 0.30
+    corridor_centre_min_advance: 0.25
     corridor_rate_hz: 5.0
     corridor_lookahead_m: 0.8
     corridor_entry_timeout_s: 15.0

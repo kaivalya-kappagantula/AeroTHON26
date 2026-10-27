@@ -8,7 +8,7 @@
   ~4 of 30 fps. A 32 MB shared-memory segment carries whole frames between
   processes on the same machine; UDPv4 stays for discovery and other hosts.
 
-  Used by qr_bcd_mission.launch.py / bcd_redzone_mission.launch.py through
+  Used by bcd_redzone_mission.launch.py through
   FASTRTPS_DEFAULT_PROFILES_FILE (rmw_fastrtps, the Jazzy default).
 -->
 <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">

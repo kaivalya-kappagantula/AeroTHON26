@@ -4,7 +4,8 @@ project(camera_ros)
 set(CMAKE_CXX_STANDARD 20)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic -Werror)
+  # no -Werror: newer libcamera / GCC on the Pi warn in clamp.cpp, cv_to_pv.cpp
+  add_compile_options(-Wall -Wextra -Wpedantic)
   add_link_options("-Wl,-z,relro,-z,now,-z,defs")
 endif()
 

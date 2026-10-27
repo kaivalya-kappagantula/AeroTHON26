@@ -160,3 +160,16 @@ def test_empty_qr_as_rendered_in_sitl_is_found():
     assert same_qr("", ref["fingerprint"], "", seen["fingerprint"], MIN_SIM)
     other = _look(qr_image("AT-42"), alt=2.0)
     assert not same_qr("", ref["fingerprint"], other["data"], other["fingerprint"], MIN_SIM)
+
+
+def test_sim_reference_matches_the_qr_seen_from_10_m():
+    # The SITL reference (made from text) must match what the scanner reads
+    # from the arena at 10 m — and not the other QRs.
+    from qr_detection.sim_reference import make_reference_record
+    from qr_detection.qr_pipeline import fingerprint_from_rows
+    for text in ("", "AT-42"):
+        ref = fingerprint_from_rows(make_reference_record(text)["grid"])
+        seen = _look(qr_image(text), alt=10.0, n=1.0, e=2.0, yaw=0.7)
+        other = _look(qr_image("XX-99"), alt=10.0, n=-1.0, e=-2.0)
+        assert same_qr(text, ref, seen["data"], seen["fingerprint"], MIN_SIM)
+        assert not same_qr(text, ref, other["data"], other["fingerprint"], MIN_SIM)

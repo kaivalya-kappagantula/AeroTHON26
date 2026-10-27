@@ -30,9 +30,9 @@ setup(
             'qr_scan_mission_node = mission_manager.qr_scan_mission_node:main',
             'takeoff_test = mission_manager.takeoff_test:main',
             'entry_corridor_mission = mission_manager.entry_corridor_mission:main',
+            'arena_search_mission = mission_manager.arena_search_mission:main',
             'bcd_sweep_mission = mission_manager.bcd_sweep_mission:main',
             'bcd_redzone_mission = mission_manager.bcd_redzone_mission:main',
-            'qr_bcd_mission = mission_manager.qr_bcd_mission:main',
         ],
     },
 )

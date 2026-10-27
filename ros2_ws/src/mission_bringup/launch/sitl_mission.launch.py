@@ -4,8 +4,14 @@
 #   ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true
 #   ros2 launch mission_bringup sitl_mission.launch.py corridor_sim:=false
 #
-# Same nodes as mission.launch.py minus the cameras; sitl_qr_simulator stands
-# in for the downward camera's QR detections.
+# Same nodes as mission.launch.py, with simulated cameras: sim_down_camera_node
+# renders what the downward Cam3 would see — the reference QR 1 m ahead of the
+# takeoff point (phase 1) and the arena's QRs and red mat (phase 3) — for the
+# REAL qr_scanner_node and red_zone_node.
+#
+# The arena (30 m across x 40 m deep) starts just past the far ends of both
+# corridors, centred between them. Its QRs: the match (the same picture as the
+# reference, holding no text) and 5 decoys; one 10 ft red mat.
 #
 # corridor_sim:=true (default): sitl_corridor_sim ray-casts the OAK-D depth
 # and the ground markers from the SITL pose into 5 ft corridors with
@@ -30,20 +36,28 @@
 #   ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true \
 #     c1_ahead_m:=8 c1_left_m:=3
 #
+# Disturbances (to check the corridors are flown centred, not on GPS):
+#   gps_drift_m     GPS error swinging +-this sideways (gps_drift_period_s), on top of
+#                   the fixed gps_offset_m in mission_params.yaml
+#   wind_ms, wind_dir_deg, wind_turb_ms
+#                   ArduPilot SITL wind (SIM_WIND_SPD / _DIR — direction it
+#                   blows FROM — / _TURB), set through MAVROS once connected
+# sitl_corridor_sim logs the true centre offset after every corridor pass.
+#
 # One phase on its own, same world (mission:=...):
 #   full            the whole mission (default)
 #   takeoff         takeoff_test: gradual takeoff -> hover -> land
-#   qr_scan         qr_scan_mission_node: phase 1 -> land (no downward camera
-#                   here, so the QR is not found: use qr_scan_mission.launch.py
-#                   sim:=true for the QR itself)
+#   qr_scan         qr_scan_mission_node: phase 1 -> land
 #   entry_corridor  entry_corridor_mission: takeoff -> phase 2 -> hover -> land
 
+import json
 import math
 import os
 
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, TimerAction
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription,
+                            OpaqueFunction, SetEnvironmentVariable, TimerAction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -93,6 +107,40 @@ def corridor_layout(ahead: float, left: float, yaw_deg: float, sim_cfg: dict) ->
     }
 
 
+def arena_world(layout: dict, sim_cfg: dict) -> dict:
+    """The SITL arena from the corridor layout (x East, y North of the
+    takeoff point): its corners, QRs (sim_down_camera_node format) and red
+    mat. Starts 1 m past the farthest corridor end."""
+    mouth = sim_cfg["mouth_offset_m"]
+    ends = []
+    for i, length in ((1, sim_cfg["corridor1_length_m"]), (2, None)):
+        xs, ys = layout[f"corridor{i}_waypoints_x"], layout[f"corridor{i}_waypoints_y"]
+        d = (xs[1] - xs[0], ys[1] - ys[0])
+        n = math.hypot(*d)
+        d = (d[0] / n, d[1] / n)
+        mouth_pt = (xs[0] + mouth * d[0], ys[0] + mouth * d[1])
+        ends.append(mouth_pt)                                   # corridor 2: far end
+        if length:
+            ends.append((mouth_pt[0] + length * d[0], mouth_pt[1] + length * d[1]))
+    y0 = max(y for _, y in ends) + 1.0
+    x0 = -15.0
+    corners = [(x0, y0), (x0 + 30.0, y0), (x0 + 30.0, y0 + 40.0), (x0, y0 + 40.0)]
+    qrs = [[0.0, 1.0, ""],                                      # phase 1 reference
+           [x0 + 6.0, y0 + 31.0, ""],                           # the match
+           [x0 + 23.0, y0 + 6.0, "AT-17"], [x0 + 27.0, y0 + 27.0, "XX-99"],
+           [x0 + 12.0, y0 + 16.0, "B-7"], [x0 + 3.0, y0 + 8.0, "Q9"],
+           [x0 + 18.0, y0 + 36.0, "AT-43"]]
+    cx, cy, h = x0 + 20.0, y0 + 18.0, 3.048 / 2                  # 10 ft mat
+    mat = [[cx - h, cy - h], [cx + h, cy - h], [cx + h, cy + h], [cx - h, cy + h]]
+    lat0, lon0 = sim_cfg["origin_lat"], sim_cfg["origin_lon"]
+    k = 111_320.0 * math.cos(math.radians(lat0))
+    return {
+        "corners_lat": [lat0 + y / 111_320.0 for _, y in corners],
+        "corners_lon": [lon0 + x / k for x, _ in corners],
+        "qr_codes": json.dumps(qrs), "red_zones": json.dumps([mat]),
+    }
+
+
 def _stack(context, *args, **kwargs):
     mission_params = os.path.join(
         get_package_share_directory("mission_bringup"), "config", "mission_params.yaml")
@@ -106,16 +154,16 @@ def _stack(context, *args, **kwargs):
         float(LaunchConfiguration("c1_left_m").perform(context)),
         float(LaunchConfiguration("c1_yaw_deg").perform(context)), sim_cfg)
 
-    # SITL has no RC pilot and no downward camera, so those gates are relaxed
-    # here (and ONLY here). The obstacle-sensor gates stay on when the
-    # simulated depth pipeline runs.
+    world = arena_world(layout, sim_cfg)
+
+    # SITL has no RC pilot, so that gate is relaxed here (and ONLY here). The
+    # obstacle-sensor gates stay on when the simulated depth pipeline runs.
     sensor = {"require_avoidance_sensor": sim}
     mission_overrides = {
         "require_rc_switch": False,         # no pilot switch in SITL
-        "allow_qr_fallback": True,          # no camera: fly with qr_fallback_id
-        "qr_scan_attempts": 1,
-        "qr_scan_timeout_s": 5.0,
         "battery_critical_v": 10.5,         # SITL simulates a 3S pack (12.6 V)
+        "arena_corners_lat": world["corners_lat"],
+        "arena_corners_lon": world["corners_lon"],
         **sensor,
     }
 
@@ -129,19 +177,27 @@ def _stack(context, *args, **kwargs):
         )
 
     nodes = [
-        node("mission_manager", "sitl_qr_simulator"),
         node("payload", "payload_node"),
         # same corridors as the simulated world (they must match)
         node("path_planner", "path_planner_node",
              {**sensor, "require_corridor_perception": sim, **layout}),
-        # Provides /perception/scan_qr; with no camera the reference scan times
-        # out and mission_node uses qr_fallback_id.
-        node("qr_detection", "qr_scanner_node", {"scan_timeout_s": 5.0}),
+        # Downward Cam3 stand-in (origin = first GPS fix = the takeoff point)
+        Node(package="qr_detection", executable="sim_down_camera_node",
+             name="sim_down_camera", output="screen",
+             parameters=[{"marker_size_m": 1.0, "qr_codes": world["qr_codes"],
+                          "red_zones": world["red_zones"]}]),
+        node("qr_detection", "qr_scanner_node"),
+        Node(package="qr_detection", executable="red_zone_node", name="red_zone_node",
+             output="screen", parameters=[{"source": "topic", "grow_known_zones": True,
+                                                 "confirm_in_flight": True}]),
     ]
     if sim:
         remaps = [("~/depth", "/oak/stereo/image_raw"),
                   ("~/camera_info", "/oak/stereo/camera_info")]
-        nodes.append(node("obstacle_avoidance", "sitl_corridor_sim", layout))
+        drift = float(LaunchConfiguration("gps_drift_m").perform(context))
+        period = float(LaunchConfiguration("gps_drift_period_s").perform(context))
+        nodes.append(node("obstacle_avoidance", "sitl_corridor_sim",
+                          {**layout, "gps_drift_m": drift, "gps_drift_period_s": period}))
         # The sim renders at half resolution (render_scale 0.5): stride 2 gives
         # the same 160x120 samples the OAK-D gives at stride 4.
         # 5 Hz sim depth (hardware: 10 Hz): widen the stale cutoffs, keeping
@@ -162,6 +218,21 @@ def _stack(context, *args, **kwargs):
                           remappings=remaps + [
                               ("~/rgb", "/oak/rgb/image_raw"),
                               ("~/rgb_camera_info", "/oak/rgb/camera_info")]))
+
+    # SITL wind: simulator parameters only (SIM_*), set once MAVROS is up.
+    wind = {"SIM_WIND_SPD": LaunchConfiguration("wind_ms").perform(context),
+            "SIM_WIND_DIR": LaunchConfiguration("wind_dir_deg").perform(context),
+            "SIM_WIND_TURB": LaunchConfiguration("wind_turb_ms").perform(context)}
+    if float(wind["SIM_WIND_SPD"]) > 0.0 or float(wind["SIM_WIND_TURB"]) > 0.0:
+        # MAVROS refuses PARAM_SET until it has the FC's parameter list: retry
+        nodes.append(TimerAction(period=6.0, actions=[ExecuteProcess(
+            cmd=["bash", "-c",
+                 "for i in $(seq 60); do ros2 service call /mavros/param/set "
+                 "mavros_msgs/srv/ParamSetV2 "
+                 f"'{{param_id: {name}, value: {{type: 3, double_value: {float(v)}}}}}' "
+                 f"| grep -q 'success=True' && echo 'SITL {name} = {float(v)}' && exit 0; "
+                 "sleep 2; done; echo 'SITL " + name + " NOT set'"],
+            output="screen") for name, v in wind.items()]))
 
     # Mission node last, after SITL + MAVROS have settled.
     exe = MISSIONS[LaunchConfiguration("mission").perform(context)]
@@ -194,6 +265,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "mission", default_value="full", choices=list(MISSIONS),
             description="Whole mission, or one phase on its own then land"),
+        DeclareLaunchArgument("gps_drift_m", default_value="0.0",
+                              description="GPS error swinging +-this sideways (m)"),
+        DeclareLaunchArgument("gps_drift_period_s", default_value="20.0",
+                              description="period of that swing (s)"),
+        DeclareLaunchArgument("wind_ms", default_value="0.0", description="SITL wind (m/s)"),
+        DeclareLaunchArgument("wind_dir_deg", default_value="90.0",
+                              description="SITL wind direction it blows FROM (deg)"),
+        DeclareLaunchArgument("wind_turb_ms", default_value="0.0",
+                              description="SITL wind turbulence (m/s)"),
         DeclareLaunchArgument(
             "c1_ahead_m", default_value="10.0",
             description="Corridor 1 entrance this far ahead (North) of takeoff (m)"),
@@ -204,5 +284,11 @@ def generate_launch_description():
             "c1_yaw_deg", default_value="0.0",
             description="Corridor 1 direction vs the nose, deg, + = left"),
         mavros_launch,
+        # Full-resolution sim frames (2.7 MB) must go through shared memory or
+        # most are lost as UDP fragments (config/fastdds_large_frames.xml).
+        SetEnvironmentVariable(
+            "FASTRTPS_DEFAULT_PROFILES_FILE",
+            PathJoinSubstitution([FindPackageShare("mission_bringup"), "config",
+                                  "fastdds_large_frames.xml"])),
         OpaqueFunction(function=_stack),
     ])
