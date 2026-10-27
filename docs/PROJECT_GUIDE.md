@@ -186,6 +186,25 @@ blurred.
 5. **Fly through** at the middle of the opening until the walls are seen to end.
 6. **Climb straight up to `post_entry_alt_m` (10 m).**
 
+**Staying centred (GPS drift, wind).** The corridor is flown on the WALLS, not on GPS:
+every cycle (5 Hz) the follower measures where the walls are relative to the drone
+and steps toward the centre (≤ 0.2 m sideways per step). GPS only turns "0.2 m left"
+into a target. **Centring first**: more than 0.10 m off centre, the forward step shrinks
+(to a quarter at 0.30 m off — `corridor_centre_slow_m`, `corridor_centre_min_advance`),
+so more of the speed goes sideways. The last ~2.5 m of a wide corridor are blind (the
+OAK-D sees ±36°: walls 1.75 m to the side are only in view from ~2.4 m ahead), so the
+"walls end — fly out" run holds the centreline **as last measured** (in GPS terms) —
+wind pushes are corrected there; GPS error cannot be until walls are seen again.
+
+SITL, 3.5 m corridor, true distance from the centreline:
+
+| Case | Max | RMS |
+|---|---|---|
+| No wind (fixed 0.5 m GPS error) | 0.08 m | 0.03 m |
+| 3 m/s crosswind, 1 m/s gusts | 0.02 m | 0.02 m |
+| Wind + GPS wandering ±0.3 m over 60 s | 0.14 m | 0.06 m |
+| Wind + extreme GPS drift ±0.5 m over 20 s | 0.67 m | 0.37 m |
+
 Robustness rules that came out of SITL testing:
 - Only fresh banner detections (**LOCK**) steer. While the tracker is coasting (**HOLD**)
   the drone waits on its last good heading — steering on stale HOLD frames while turning
@@ -214,6 +233,10 @@ Robustness rules that came out of SITL testing:
    is cut out of the arena → if the drone stopped inside the margin it moves straight
    out → the rest of the sweep is re-planned with every hop routed **around** the mat.
    Unreachable strip pieces are skipped, never flown across.
+   There is only one mat, so after the first confirm `red_zone_node`
+   (`grow_known_zones`) adds red **connected to it** while flying — no stop per slice;
+   the outline is re-published and the sweep re-plans on the move. Red not connected to
+   it still triggers a stop-and-confirm.
    Red camera silent for more than 0.5 s → brake and hold ("blind"); silent 10 s → abort.
 5. **On a match**: brake, fly over it, scan again to refine (up to 2 passes, ≤ 1 m).
    Returns the QR's GPS position for phase 4.
@@ -266,7 +289,10 @@ ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true
 the green banner, the OAK-D depth, the downward camera with the reference QR 1 m ahead,
 the arena (30 × 40 m) with 6 QRs and a red mat. Real perception nodes run on the
 simulated images. Move corridor 1 with `c1_ahead_m`, `c1_left_m`, `c1_yaw_deg`.
-`mission:=takeoff|qr_scan|entry_corridor|full` picks the flight.
+`mission:=takeoff|qr_scan|entry_corridor|full` picks the flight. Disturbances:
+`wind_ms`, `wind_dir_deg`, `wind_turb_ms` (ArduPilot SITL wind) and `gps_drift_m`,
+`gps_drift_period_s` (a drifting GPS error); `sitl_corridor_sim` logs the true
+distance from the centreline after each corridor pass.
 
 Tips: SITL simulates a 3S battery, so the launch files lower `battery_critical_v` in SITL
 only. A cold SITL needs ~30–60 s before it has a position (the takeoff waits).
@@ -334,13 +360,14 @@ yaml and mentioned when the change is shared.
 | Gradual takeoff | ✅ | ✅ | ⬜ |
 | Phase 1 — reference QR (incl. no-text QR) | ✅ | ✅ | ⬜ |
 | Phase 2 — entry corridor | ✅ | ✅ (alone and in the full mission, different layouts) | ⬜ |
-| Phase 3 — arena search | ✅ | ✅ (alone and in the full mission) | ⬜ |
+| Phase 3 — arena search | ✅ | ✅ (alone and in the full mission; red mat: 1 stop) | ⬜ |
 | Phase 4 — payload drop | old code | runs, has a bug (below) | ⬜ |
 | Corridor 2, homing, landing | old code | not re-checked | ⬜ |
 
 `mission_manager/bcd_sweep_mission.py` (a simple lawnmower) **has flown on the real drone**
-and is the proven reference for how to fly a sweep; it and `bcd_redzone_mission.py` /
-`qr_bcd_mission.py` are kept unchanged as standalone tests.
+and is the proven reference for how to fly a sweep; it and `bcd_redzone_mission.py` are kept
+as standalone tests (unchanged apart from the throttle cap). The old `qr_bcd_mission.py`
+was removed — `arena_search_mission` is the full QR-search test now.
 
 ### To do on the Pi / drone (in this order)
 
@@ -366,11 +393,11 @@ and is the proven reference for how to fly a sweep; it and `bcd_redzone_mission.
   more than 0.5 s (value from the proven 2 m flights). On a laptop SITL this happened 0–6
   times per run, each over in a second or two. At 10 m the camera sees 3.8 m ahead, so
   ~1.5 s would likely still be safe — undecided.
-- **Red mat mapped in slices**: each step forward reveals more of the mat, so it can take
-  ~5 stop-and-confirm cycles (~40 s). Safe, but could be made faster.
+- **Corridor blind end**: the last ~2.5 m of a wide corridor can't be centred on the
+  walls (camera field of view); GPS error there isn't corrected. Fine with realistic GPS
+  (SITL: ≤ 0.14 m), worth watching on the real drone.
 - **Phase 4 bug**: `_drop_payload()` only checks the horizontal distance to the QR. Since
   the drone is already over it, it "arrives" immediately and may release before reaching
   5 m. To fix when phase 4 is reworked.
 - **Later phases to define and rework**: drop (5 m), corridor 2 (obstacles), homing.
   Altitudes after the arena are "mostly 10 m, 5 m for the drop".
-- `qr_bcd_mission.py` still has its own takeoff and QR code; it should use the shared modules.

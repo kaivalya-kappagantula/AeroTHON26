@@ -134,3 +134,98 @@ def test_edge_sliver_is_confirmed_not_cleared():
     _hover(perc, st, [zone])
     assert zmap.finish_window() > 0.0
     assert zmap.zone_polygons_ne()
+
+
+# ── grow_known: a mat found slice by slice needs one hover-confirm ────────
+
+MAT = np.array([[3.0, -1.5], [3.0, 1.5], [6.05, 1.5], [6.05, -1.5]])   # 10 ft, ahead
+
+
+def _confirm_slice(grow):
+    """At 10 m only the near slice of MAT is in view (the frame reaches
+    ~3.8 m ahead): hover-confirm it."""
+    cam = CameraModel.cam3_default(640, 360)
+    zmap = RedZoneMap(grow_known=grow)
+    perc = RedZonePerception(cam, RedConfig(), zmap)
+    st = VehicleState(0, 0, 10.0, 0, 0, 0)
+    zmap.start_window()
+    _hover(perc, st, [MAT])
+    assert zmap.finish_window() > 0.5
+    assert max(p[:, 0].max() for p in zmap.zone_polygons_ne()) < 4.5   # a slice only
+    return perc, zmap
+
+
+def test_known_mat_grows_in_flight_without_a_new_sighting():
+    perc, zmap = _confirm_slice(grow=True)
+    st = VehicleState(2.5, 0, 10.0, 0, 0, 0)          # 2.5 m on: the whole mat in view
+    rng = np.random.default_rng(2)
+    news, grown = [], 0.0
+    for _ in range(10):
+        res = perc.process(render_sim_frame(perc.cam, st, [MAT], rng), st)
+        news.append(res.new_red_m2)
+        grown += res.grown_m2
+    assert max(news) == 0.0                            # never a new sighting
+    assert grown > 3.0
+    north = max(p[:, 0].max() for p in zmap.zone_polygons_ne())
+    assert north >= 5.8                                # the far edge is mapped
+
+
+def test_red_not_touching_the_known_mat_is_still_a_new_sighting():
+    perc, zmap = _confirm_slice(grow=True)
+    # 2.5 m clear of the mat, beyond what the confirm hover saw (cleared)
+    other = np.array([[5.0, 4.0], [5.0, 5.0], [6.0, 5.0], [6.0, 4.0]])
+    st = VehicleState(2.5, 0, 10.0, 0, 0, 0)
+    res = perc.process(render_sim_frame(perc.cam, st, [MAT, other],
+                                        np.random.default_rng(3)), st)
+    assert res.new_red_m2 > 0.5
+
+
+def test_without_grow_known_each_slice_is_a_new_sighting():
+    # default behaviour (bcd_redzone_mission) is unchanged
+    perc, zmap = _confirm_slice(grow=False)
+    st = VehicleState(2.5, 0, 10.0, 0, 0, 0)
+    res = perc.process(render_sim_frame(perc.cam, st, [MAT], np.random.default_rng(2)), st)
+    assert res.new_red_m2 > 1.0 and res.grown_m2 == 0.0
+
+
+# ── confirm_in_flight: the first sight of the mat needs no hover either ───
+
+def _fly_toward_mat(confirm_in_flight, frames=10):
+    cam = CameraModel.cam3_default(640, 360)
+    zmap = RedZoneMap(grow_known=True, confirm_in_flight=confirm_in_flight)
+    perc = RedZonePerception(cam, RedConfig(), zmap)
+    st = VehicleState(0, 0, 10.0, 0, 0, 0)            # MAT's near edge 3 m ahead
+    rng = np.random.default_rng(4)
+    return [perc.process(render_sim_frame(cam, st, [MAT], rng), st)
+            for _ in range(frames)], zmap
+
+
+def test_new_red_reports_its_distance():
+    res, _ = _fly_toward_mat(confirm_in_flight=False, frames=1)
+    assert res[0].new_red_m2 > 0.5
+    assert res[0].new_red_dist_m == pytest.approx(3.0, abs=0.4)
+
+
+def test_mat_is_confirmed_in_flight_without_a_hover():
+    res, zmap = _fly_toward_mat(confirm_in_flight=True)
+    assert res[0].new_red_m2 > 0.5                    # first frames: still new
+    assert sum(r.grown_m2 for r in res) > 0.5         # then confirmed in flight
+    assert res[-1].new_red_m2 == 0.0 and res[-1].new_red_dist_m == -1.0
+    polys = zmap.zone_polygons_ne()
+    assert len(polys) == 1 and polys[0][:, 0].min() <= 3.0   # near edge covered
+
+
+def test_without_confirm_in_flight_new_red_waits_for_a_hover():
+    res, zmap = _fly_toward_mat(confirm_in_flight=False)
+    assert res[-1].new_red_m2 > 0.5 and zmap.zone_polygons_ne() == []
+
+
+def test_red_seen_in_too_few_frames_is_not_confirmed():
+    cam = CameraModel.cam3_default(640, 360)
+    zmap = RedZoneMap(grow_known=True, confirm_in_flight=True)
+    perc = RedZonePerception(cam, RedConfig(), zmap)
+    st = VehicleState(0, 0, 10.0, 0, 0, 0)
+    rng = np.random.default_rng(5)
+    for i in range(12):                               # red flickers in 2 of 12 frames
+        perc.process(render_sim_frame(cam, st, [MAT] if i in (3, 7) else [], rng), st)
+    assert zmap.zone_polygons_ne() == []

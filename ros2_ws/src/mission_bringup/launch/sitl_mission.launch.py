@@ -36,6 +36,14 @@
 #   ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true \
 #     c1_ahead_m:=8 c1_left_m:=3
 #
+# Disturbances (to check the corridors are flown centred, not on GPS):
+#   gps_drift_m     GPS error swinging +-this sideways (gps_drift_period_s), on top of
+#                   the fixed gps_offset_m in mission_params.yaml
+#   wind_ms, wind_dir_deg, wind_turb_ms
+#                   ArduPilot SITL wind (SIM_WIND_SPD / _DIR — direction it
+#                   blows FROM — / _TURB), set through MAVROS once connected
+# sitl_corridor_sim logs the true centre offset after every corridor pass.
+#
 # One phase on its own, same world (mission:=...):
 #   full            the whole mission (default)
 #   takeoff         takeoff_test: gradual takeoff -> hover -> land
@@ -48,8 +56,8 @@ import os
 
 import yaml
 from launch import LaunchDescription
-from launch.actions import (DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction,
-                            SetEnvironmentVariable, TimerAction)
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription,
+                            OpaqueFunction, SetEnvironmentVariable, TimerAction)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import AnyLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -180,12 +188,16 @@ def _stack(context, *args, **kwargs):
                           "red_zones": world["red_zones"]}]),
         node("qr_detection", "qr_scanner_node"),
         Node(package="qr_detection", executable="red_zone_node", name="red_zone_node",
-             output="screen", parameters=[{"source": "topic"}]),
+             output="screen", parameters=[{"source": "topic", "grow_known_zones": True,
+                                                 "confirm_in_flight": True}]),
     ]
     if sim:
         remaps = [("~/depth", "/oak/stereo/image_raw"),
                   ("~/camera_info", "/oak/stereo/camera_info")]
-        nodes.append(node("obstacle_avoidance", "sitl_corridor_sim", layout))
+        drift = float(LaunchConfiguration("gps_drift_m").perform(context))
+        period = float(LaunchConfiguration("gps_drift_period_s").perform(context))
+        nodes.append(node("obstacle_avoidance", "sitl_corridor_sim",
+                          {**layout, "gps_drift_m": drift, "gps_drift_period_s": period}))
         # The sim renders at half resolution (render_scale 0.5): stride 2 gives
         # the same 160x120 samples the OAK-D gives at stride 4.
         # 5 Hz sim depth (hardware: 10 Hz): widen the stale cutoffs, keeping
@@ -206,6 +218,21 @@ def _stack(context, *args, **kwargs):
                           remappings=remaps + [
                               ("~/rgb", "/oak/rgb/image_raw"),
                               ("~/rgb_camera_info", "/oak/rgb/camera_info")]))
+
+    # SITL wind: simulator parameters only (SIM_*), set once MAVROS is up.
+    wind = {"SIM_WIND_SPD": LaunchConfiguration("wind_ms").perform(context),
+            "SIM_WIND_DIR": LaunchConfiguration("wind_dir_deg").perform(context),
+            "SIM_WIND_TURB": LaunchConfiguration("wind_turb_ms").perform(context)}
+    if float(wind["SIM_WIND_SPD"]) > 0.0 or float(wind["SIM_WIND_TURB"]) > 0.0:
+        # MAVROS refuses PARAM_SET until it has the FC's parameter list: retry
+        nodes.append(TimerAction(period=6.0, actions=[ExecuteProcess(
+            cmd=["bash", "-c",
+                 "for i in $(seq 60); do ros2 service call /mavros/param/set "
+                 "mavros_msgs/srv/ParamSetV2 "
+                 f"'{{param_id: {name}, value: {{type: 3, double_value: {float(v)}}}}}' "
+                 f"| grep -q 'success=True' && echo 'SITL {name} = {float(v)}' && exit 0; "
+                 "sleep 2; done; echo 'SITL " + name + " NOT set'"],
+            output="screen") for name, v in wind.items()]))
 
     # Mission node last, after SITL + MAVROS have settled.
     exe = MISSIONS[LaunchConfiguration("mission").perform(context)]
@@ -238,6 +265,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "mission", default_value="full", choices=list(MISSIONS),
             description="Whole mission, or one phase on its own then land"),
+        DeclareLaunchArgument("gps_drift_m", default_value="0.0",
+                              description="GPS error swinging +-this sideways (m)"),
+        DeclareLaunchArgument("gps_drift_period_s", default_value="20.0",
+                              description="period of that swing (s)"),
+        DeclareLaunchArgument("wind_ms", default_value="0.0", description="SITL wind (m/s)"),
+        DeclareLaunchArgument("wind_dir_deg", default_value="90.0",
+                              description="SITL wind direction it blows FROM (deg)"),
+        DeclareLaunchArgument("wind_turb_ms", default_value="0.0",
+                              description="SITL wind turbulence (m/s)"),
         DeclareLaunchArgument(
             "c1_ahead_m", default_value="10.0",
             description="Corridor 1 entrance this far ahead (North) of takeoff (m)"),

@@ -33,7 +33,6 @@ setup(
             'arena_search_mission = mission_manager.arena_search_mission:main',
             'bcd_sweep_mission = mission_manager.bcd_sweep_mission:main',
             'bcd_redzone_mission = mission_manager.bcd_redzone_mission:main',
-            'qr_bcd_mission = mission_manager.qr_bcd_mission:main',
         ],
     },
 )

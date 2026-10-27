@@ -245,6 +245,9 @@ class FlightPrimitives(Node):
                 return
             # --no-mavproxy: we must request our own data streams.
             mav.request_message_intervals(self, (33, 32))  # GLOBAL_POSITION_INT, LOCAL_POSITION_NED
+            if not mav.apply_throttle_cap(self):
+                self._finish(False)
+                return
             if not self._acquire_home():
                 self._finish(False)
                 return

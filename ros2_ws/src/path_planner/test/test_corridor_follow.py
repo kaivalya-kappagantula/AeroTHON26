@@ -65,7 +65,22 @@ def test_centres_from_offset():
     c = plan(tracker_at(0.15), None, 0.0, 1.5, 1.5, P)
     assert c.mode == "centre"
     assert c.lateral == pytest.approx(-0.15)        # move right by 0.15
+    # centring first: 0.05 m past align_tol of a 0.20 m slow-down band
+    assert c.advance == pytest.approx(P.lookahead_m * (1 - 0.05 / 0.20))
+    assert c.clear
+
+
+def test_full_step_when_centred_within_align_tol():
+    c = plan(tracker_at(0.08), None, 0.0, 1.5, 1.5, P)
     assert c.advance == P.lookahead_m
+
+
+def test_far_off_centre_mostly_moves_sideways():
+    # GPS drift / wind pushed it 0.5 m off: quarter step forward, full step across
+    c = plan(tracker_at(0.5), None, 0.0, 1.5, 1.5, P)
+    assert c.advance == pytest.approx(P.lookahead_m * P.centre_min_advance)
+    assert c.lateral == pytest.approx(-P.max_lateral_step_m)
+    assert c.clear                                  # slowed, but nothing in the way
 
 
 def test_lateral_step_is_clamped():
@@ -100,8 +115,11 @@ def test_obstacle_against_left_wall_pass_right():
     assert c.mode == "pass_right"
     # middle of the right gap: (0.152 - 0.762) / 2 = -0.305, clamp limit 0.387
     assert c.lateral == pytest.approx(-P.max_lateral_step_m)
-    # not lined up yet: may advance only to stop_dist short of the face
-    assert c.advance == pytest.approx(min(P.lookahead_m, 2.5 - P.stop_dist_m))
+    # not lined up yet: may advance only to stop_dist short of the face, and
+    # 0.3 m off its line it is also slowed to centre first
+    assert c.advance <= 2.5 - P.stop_dist_m
+    assert c.advance == pytest.approx(P.lookahead_m * P.centre_min_advance)
+    assert not c.clear                              # an obstacle limits it
 
 
 def test_stops_short_until_lined_up_then_passes():

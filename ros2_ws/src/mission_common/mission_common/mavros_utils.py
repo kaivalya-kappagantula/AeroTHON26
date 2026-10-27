@@ -196,6 +196,40 @@ def set_fcu_param(node: Node, name: str, value, timeout: float = 5.0) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# apply_throttle_cap — motor output ceiling enforced before every flight
+# ---------------------------------------------------------------------------
+# MOT_SPIN_MAX is the fraction of the ESC output range at which thrust
+# saturates, so it caps motor output in every mode (GUIDED, pilot, failsafe).
+# Was 0.95. MOT_HOVER_LEARN re-learns MOT_THST_HOVER after the rescale.
+THROTTLE_CAP_PARAM = "MOT_SPIN_MAX"
+THROTTLE_CAP = 0.80
+
+
+def apply_throttle_cap(node: Node, timeout: float = 5.0) -> bool:
+    """Write THROTTLE_CAP to MOT_SPIN_MAX and confirm the FCU echoes it back.
+
+    Call once per mission before arming; refuse to fly if it returns False.
+    """
+    from mavros_msgs.srv import ParamSetV2
+    from rcl_interfaces.msg import ParameterType, ParameterValue
+
+    req = ParamSetV2.Request()
+    req.param_id = THROTTLE_CAP_PARAM
+    req.value = ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
+                               double_value=THROTTLE_CAP)
+    result = _call_service(node, ParamSetV2, "/mavros/param/set", req, timeout=timeout)
+    if result and result.success and abs(result.value.double_value - THROTTLE_CAP) < 1e-3:
+        node.get_logger().info(
+            f"[mavros_utils] Throttle cap: {THROTTLE_CAP_PARAM} = {THROTTLE_CAP:.2f} (confirmed)")
+        return True
+    got = result.value.double_value if result else None
+    node.get_logger().error(
+        f"[mavros_utils] Throttle cap NOT applied: {THROTTLE_CAP_PARAM} want "
+        f"{THROTTLE_CAP:.2f}, got {got}")
+    return False
+
+
+# ---------------------------------------------------------------------------
 # request_message_intervals — make ArduPilot stream what we subscribe to
 # ---------------------------------------------------------------------------
 def request_message_intervals(node: Node, message_ids=MISSION_STREAMS,

@@ -17,13 +17,19 @@
 #      (e.g. the reference QR itself) is ignored and the scan restarted.
 #   3. fly the strips at arena_sweep_speed_ms with the method proven in
 #      bcd_sweep_mission.py (hold, then DO_CHANGE_SPEED, then short position
-#      target bursts); red zones as bcd_redzone_mission.py: new red in view
-#      (red_zone_node /red_zone/sighting) -> brake -> /red_zone/confirm (hover
-#      window) -> the zone + arena_red_margin_m is cut out of the arena, the
-#      drone moves out of the margin if it stopped inside it, and the rest of
-#      the sweep is re-planned with every hop routed around the zones
-#      (sweep_replan.py); a strip piece that cannot be reached is skipped.
-#      Camera silent -> brake and hold; still blind after BLIND_HOLD_S -> abort.
+#      target bursts). Red zones are confirmed ON THE MOVE: red_zone_node
+#      (grow_known_zones + confirm_in_flight) confirms red seen in enough
+#      frames while the drone flies and publishes the outline on
+#      /red_zone/zones -> the zone + arena_red_margin_m is cut out of the
+#      arena and the rest of the sweep is re-planned around it without
+#      stopping (sweep_replan.py; a strip piece that cannot be reached is
+#      skipped; the drone brakes and moves out only if it ended up inside
+#      the margin). Unconfirmed red that comes within near_m of the drone
+#      (/red_zone/new_red_dist; near_m = margin + braking distance + buffer)
+#      -> brake -> /red_zone/confirm (hover window), as bcd_redzone_mission.py.
+#      Camera silent: fly on while what it last saw ahead still covers the
+#      drone (blind_budget_s, from altitude, FOV, speed and near_m); longer
+#      -> brake and hold; still blind after BLIND_HOLD_S -> abort.
 #   4. on a match: brake, fly over its position (around the zones), hover,
 #      scan again to refine it (arena_match_passes). Returns its (lat, lon).
 #      Whole arena swept with no match -> None.
@@ -43,7 +49,7 @@ import time
 
 from shapely.geometry import Point
 from shapely.ops import unary_union
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float32, String
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
 from mission_common import mavros_utils as mav
@@ -60,10 +66,16 @@ SRV_RED_ZONE_CONFIRM = "/red_zone/confirm"
 CONFIRM_WINDOW_S = 4.0       # = red_zone_node window_s
 BRAKE_SETTLE_S = 1.5
 DETECTOR_TIMEOUT_S = 0.5     # /red_zone/sighting older than this = blind
+                             # (start-up check; the sweep itself uses blind_budget_s)
 BLIND_HOLD_S = 10.0
 MAX_STOPS = 30
 ARRIVAL_TOL_M = 0.3
 MATCH_EDGE_TOL_M = 1.0       # a match this far outside the arena still counts
+# Braking distance = speed * BRAKE_LATENCY_S + speed^2 / (2 * BRAKE_DECEL_MS2)
+BRAKE_LATENCY_S = 0.5        # frame -> red_zone_node -> mission -> FC
+BRAKE_DECEL_MS2 = 1.0        # well under ArduCopter's guided deceleration
+NEAR_BUFFER_M = 0.5          # on top of the margin and the braking distance
+IMAGE_ASPECT = 720 / 1280    # Cam3 frame height / width: the look-ahead axis
 
 
 class ArenaSearch:
@@ -72,8 +84,11 @@ class ArenaSearch:
         self.node = node
         self.cfg = node.cfg
         self._det_t = 0.0            # last /red_zone/sighting (monotonic)
-        self._sight_t = 0.0          # last True
+        self._sight_t = 0.0          # last unconfirmed red within near_m
         self._sight_after = 0.0      # sightings before this are handled
+        self._red_dist = -1.0        # last /red_zone/new_red_dist (-1 = none)
+        self.near_m = 0.0            # set in run()
+        self.blind_budget_s = DETECTOR_TIMEOUT_S
         self._match = None           # (lat, lon) of a match inside the arena
         self._rescan = False         # a match outside the arena: scan again
         self._watch_match = False    # record matches (sweep + refine)
@@ -82,22 +97,37 @@ class ArenaSearch:
         self.frame = None
         self.zones = []              # confirmed red outlines, arena frame
         self.stops = 0
+        self._zones_msg = None       # newest /red_zone/zones (dict)
+        self._zones_ver = 0          # bumped by every /red_zone/zones message
+        self._zones_used = 0         # version last applied
         node.create_subscription(Bool, "/red_zone/sighting", self._sighting_cb, 10)
+        node.create_subscription(Float32, "/red_zone/new_red_dist", self._dist_cb, 10)
         node.create_subscription(String, "/qr/detection", self._qr_cb, 10)
         latched = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              history=HistoryPolicy.KEEP_LAST, depth=1)
         node.create_subscription(String, "/qr/reference", self._reference_cb, latched)
+        node.create_subscription(String, "/red_zone/zones", self._zones_cb, latched)
 
     def _log(self):
         return self.node.get_logger()
 
     # ── Callbacks (record only) ──────────────────────────────────────────
     def _sighting_cb(self, msg: Bool):
-        now = time.monotonic()
-        self._det_t = now
-        if msg.data:
-            self._sight_t = now
+        self._det_t = time.monotonic()
+
+    def _dist_cb(self, msg: Float32):
+        # unconfirmed red only stops the drone once it is near
+        self._red_dist = float(msg.data)
+        if 0.0 <= self._red_dist <= self.near_m:
+            self._sight_t = time.monotonic()
+
+    def _zones_cb(self, msg: String):
+        try:
+            self._zones_msg = json.loads(msg.data)
+        except ValueError:
+            return
+        self._zones_ver += 1
 
     def _reference_cb(self, msg: String):
         try:
@@ -149,6 +179,16 @@ class ArenaSearch:
     def _detector_live(self):
         return time.monotonic() - self._det_t <= DETECTOR_TIMEOUT_S
 
+    def _blind_too_long(self):
+        """Silent longer than what the camera last saw ahead covers."""
+        silent = time.monotonic() - self._det_t
+        if silent <= DETECTOR_TIMEOUT_S:
+            return False
+        budget = self.blind_budget_s
+        if self._red_dist >= 0.0:          # unconfirmed red already in view
+            budget = min(budget, max(0.0, (self._red_dist - self.near_m) / self.speed))
+        return silent > max(DETECTOR_TIMEOUT_S, budget)
+
     def _new_sighting(self):
         return self._sight_t > self._sight_after
 
@@ -190,8 +230,8 @@ class ArenaSearch:
 
     # ── Flying (bcd_redzone_mission.py's, in the arena frame) ────────────
     def _fly_to(self, u, v, label, watch=True):
-        """Fly to (u, v). Returns "arrived", "sighting", "blind", "target".
-        Arrival timeout -> MissionAbort."""
+        """Fly to (u, v). Returns "arrived", "sighting", "blind", "zones"
+        (the known zone grew), "target". Arrival timeout -> MissionAbort."""
         lat, lon = self._goto(u, v)
         dist = mav.haversine(*self.node.gps, lat, lon)
         self._log().info(f"[arena] -> {label}: ({u:.1f}, {v:.1f}) m, {dist:.1f} m away")
@@ -201,8 +241,11 @@ class ArenaSearch:
             self.node._tick()
             if watch and self._new_sighting():
                 return "sighting"
-            if watch and not self._detector_live():
+            if watch and self._blind_too_long():
                 return "blind"
+            if (watch and self._zones_ver != self._zones_used
+                    and self._zones_msg and self._zones_msg.get("zones")):
+                return "zones"
             extra = self._extra() if watch else None
             if extra is not None:
                 return extra
@@ -233,7 +276,11 @@ class ArenaSearch:
         self._sight_after = time.monotonic() + 0.2
         if res is None or not res.success:
             raise self.node.abort_type("failure", "arena: red-zone confirmation failed")
-        data = json.loads(res.message)
+        self._apply_zones(json.loads(res.message))
+        self._zones_used = self._zones_ver      # the confirm also published them
+
+    def _apply_zones(self, data):
+        """Merge red_zone_node's zones (lat/lon) into self.zones."""
         polys = list(self.zones)        # zones are only ever added
         for z in data["zones"]:
             poly = polygon([self.frame.from_gps(lat, lon) for lat, lon in z])
@@ -280,6 +327,32 @@ class ArenaSearch:
             self._sight_after = time.monotonic() + 0.2
         return start
 
+    def _handle_growth(self):
+        """A zone was confirmed or grew in flight: take the outline. No brake
+        unless the drone is now inside the margin (then out of it, as after
+        a stop). Returns the start point for the re-plan."""
+        ver = self._zones_ver
+        self._apply_zones(self._zones_msg)
+        self._zones_used = ver
+        here = self._here()
+        start = escape_point(here, self._space(here))
+        if start is None:
+            raise self.node.abort_type("failure", "arena: no flyable area left")
+        if math.dist(start, here) > 0.3:
+            stop = self._brake()
+            start = escape_point(stop, self._space(stop))
+            if not exits_cleanly(stop, start, self.zones):
+                raise self.node.abort_type("failure", "arena: cannot leave the margin "
+                                                      "without crossing red")
+            self._log().warn(f"[arena] the red zone reaches the drone's margin — moving out "
+                             f"{math.dist(start, stop):.2f} m")
+            self._fly_to(start[0], start[1], "out of margin", watch=False)
+            self._sight_after = time.monotonic() + 0.2
+        # else: at most 0.3 m into the margin (the route hugs it and the
+        # outline grew a little) — plan from the escape point, no brake;
+        # planning from inside the margin finds no route at all
+        return start
+
     def _fly_route(self, start, goal, label):
         """start -> goal around the zones, re-planning after every red stop.
         Returns "arrived", "unreachable" or "target"."""
@@ -294,6 +367,9 @@ class ArenaSearch:
                     continue
                 if r in ("sighting", "blind"):
                     start = self._handle_stop(r)
+                    break
+                if r == "zones":
+                    start = self._handle_growth()
                     break
                 return r
             else:
@@ -340,7 +416,8 @@ class ArenaSearch:
             if reason == "target":
                 self._brake()
                 return "target"
-            start = self._handle_stop(reason)
+            start = (self._handle_growth() if reason == "zones"
+                     else self._handle_stop(reason))
             if hop.seg is not None:          # that strip continues from here
                 cut = cut_at_progress(hop.seg, start)
                 remaining = [cut if s is hop.seg else s for s in remaining
@@ -383,6 +460,11 @@ class ArenaSearch:
         self.alt = float(cfg.arena_alt_m)
         self.speed = float(cfg.arena_sweep_speed_ms)
         self.zones, self.stops, self._match, self._rescan = [], 0, None, False
+        brake_m = self.speed * BRAKE_LATENCY_S + self.speed ** 2 / (2.0 * BRAKE_DECEL_MS2)
+        self.near_m = float(cfg.arena_red_margin_m) + brake_m + NEAR_BUFFER_M
+        ahead_m = (self.alt * math.tan(math.radians(cfg.down_cam_hfov_deg) / 2.0)
+                   * IMAGE_ASPECT)
+        self.blind_budget_s = max(DETECTOR_TIMEOUT_S, (ahead_m - self.near_m) / self.speed)
         w_max = strip_width_for(self.alt, cfg.down_cam_hfov_deg, cfg.arena_qr_size_m)
         sweep = best_sweep(corners or self.corners(), node.gps, w_max, cfg.arena_edge_margin_m)
         self.frame = sweep.frame
@@ -392,7 +474,9 @@ class ArenaSearch:
             f"{len(sweep.segments)} strips {sweep.strip_width:.1f} m apart along "
             f"{math.degrees(self.yaw):.0f} deg ENU, {sweep.length:.0f} m to fly at "
             f"{self.speed:.2f} m/s, {self.alt:.0f} m; red margin "
-            f"{cfg.arena_red_margin_m:.1f} m")
+            f"{cfg.arena_red_margin_m:.1f} m; brakes for unconfirmed red within "
+            f"{self.near_m:.2f} m (camera sees {ahead_m:.2f} m ahead), flies through "
+            f"camera gaps up to {self.blind_budget_s:.1f} s")
         ref = self._reference
         if ref is None:
             self._log().warn("[arena] no reference on /qr/reference — qr_scanner_node may "

@@ -19,6 +19,13 @@
 # cloth): its pixels are NaN in the depth image, so path_planner measures its
 # height from where the walls begin.
 #
+# gps_drift_m / gps_drift_period_s add a slowly DRIFTING lateral error on top
+# (offset + drift * sin(2 pi t / period)): the walls move against the GPS
+# while the vehicle flies, as GPS wander does. 0 = off.
+# Ground truth: after each pass through a corridor the true lateral offset
+# from its centreline (max, RMS) and the closest wall are logged
+# ("[sitl_corridor_sim] corridorN pass: ...") — how well it stayed centred.
+#
 # gps_offset_m shifts the world laterally against the EKF (true position =
 # EKF + offset, to the LEFT of each corridor): GPS-only flight would hit a
 # wall; the camera-based centring must correct it.
@@ -32,6 +39,7 @@
 # from the mouth; each box is obstacle_depth_m long.
 
 import math
+import time
 
 import numpy as np
 import rclpy
@@ -76,6 +84,8 @@ class SitlCorridorSim(Node):
         dp('exit_offset_m', 1.0)
         dp('obstacle_depth_m', 0.4)
         dp('gps_offset_m', 0.0)
+        dp('gps_drift_m', 0.0)
+        dp('gps_drift_period_s', 20.0)
         dp('depth_rate_hz', 5.0)
         dp('render_scale', 0.5)        # 320x240: ray casting 640x480 takes ~90 ms
         dp('marker_strip_m', 1.0)
@@ -127,6 +137,10 @@ class SitlCorridorSim(Node):
             f'[sitl_corridor_sim] green banner on corridor1: {2 * half:.2f} m wide, '
             f'{bottom:.2f}-{self.banner.z_top:.2f} m')
         self.offset = float(gp('gps_offset_m'))
+        self.drift = float(gp('gps_drift_m'))
+        self.drift_period = max(1.0, float(gp('gps_drift_period_s')))
+        self._t0 = time.monotonic()
+        self._pass = {}                 # corridor name -> [lateral offsets] while inside
         self.strip = float(gp('marker_strip_m'))
         k = float(gp('render_scale'))
         c = Camera()
@@ -167,7 +181,9 @@ class SitlCorridorSim(Node):
         d_n, d_e = mav.ne_offset(*c['first'], *self._gps)
         a_n, a_e = c['axis']
         x = d_n * a_n + d_e * a_e - c['mouth']
-        y = d_n * a_e - d_e * a_n + self.offset
+        drift = self.drift * math.sin(2 * math.pi * (time.monotonic() - self._t0)
+                                      / self.drift_period)
+        y = d_n * a_e - d_e * a_n + self.offset + drift
         return x, y, math.atan2(math.sin(self._yaw - c['yaw']), math.cos(self._yaw - c['yaw']))
 
     def _tick(self):
@@ -194,6 +210,7 @@ class SitlCorridorSim(Node):
         self.rgb_info_pub.publish(self._info(stamp, self.colour_cam, 'oak_rgb'))
         self.rgb_pub.publish(self._bgr(bgr, stamp))
 
+        self._track_pass(c, x, y)
         marker = 'none'
         if near and abs(y) < c['scene'].width / 2 + 0.5:
             if -self.strip <= x <= 0.0:
@@ -201,6 +218,27 @@ class SitlCorridorSim(Node):
             elif c['length'] <= x <= c['length'] + self.strip:
                 marker = 'blue'
         self.marker_pub.publish(String(data=marker))
+
+    def _track_pass(self, c, x, y):
+        """Ground truth: true lateral offset while between the walls; log
+        it when the vehicle leaves them."""
+        half = c['scene'].width / 2
+        inside = 0.0 <= x <= c['length'] and abs(y) < half
+        offs = self._pass.setdefault(c['name'], [])
+        if inside:
+            offs.append(y)
+            self.get_logger().info(
+                f"[sitl_corridor_sim] {c['name']} at {x:4.1f} m: true centre offset "
+                f"{y:+.2f} m", throttle_duration_sec=0.5)
+        elif offs:
+            rms = math.sqrt(sum(v * v for v in offs) / len(offs))
+            worst = max(offs, key=abs)
+            self.get_logger().info(
+                f"[sitl_corridor_sim] {c['name']} pass: centre offset max {abs(worst):.2f} m "
+                f"({'left' if worst > 0 else 'right'}), RMS {rms:.2f} m over {len(offs)} "
+                f"frames; closest wall {half - abs(worst):.2f} m from the centre point "
+                f"(corridor {2 * half:.2f} m wide)")
+            self._pass[c['name']] = []
 
     def _info(self, stamp, cam, frame_id):
         m = CameraInfo()

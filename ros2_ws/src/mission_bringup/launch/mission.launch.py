@@ -82,7 +82,8 @@ def generate_launch_description():
         executable="red_zone_node",
         name="red_zone_node",
         output="screen",
-        parameters=[{"source": "topic"}],
+        # one red mat: confirmed in flight (no hover), red joined to it added in flight
+        parameters=[{"source": "topic", "grow_known_zones": True, "confirm_in_flight": True}],
     )
     mission_node = mission_node_of("mission_manager", "mission_node")
 

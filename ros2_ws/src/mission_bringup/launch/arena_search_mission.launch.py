@@ -154,7 +154,9 @@ def generate_launch_description():
         executable="red_zone_node",
         name="red_zone_node",
         output="screen",
-        parameters=[{"source": "topic", "mount_yaw_deg": _float("cam_yaw")}],
+        # red confirmed in flight (no hover), and red joined to it added
+        parameters=[{"source": "topic", "mount_yaw_deg": _float("cam_yaw"),
+                     "grow_known_zones": True, "confirm_in_flight": True}],
     )
 
     mission = Node(

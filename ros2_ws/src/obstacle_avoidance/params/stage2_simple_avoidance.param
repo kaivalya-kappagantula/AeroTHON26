@@ -17,3 +17,5 @@ PRX1_TYPE        2
 AVOID_ENABLE     7
 AVOID_MARGIN     0.6
 AVOID_BEHAVE     1
+# Throttle cap: motor output ceiling for every flight (was 0.95).
+MOT_SPIN_MAX     0.80

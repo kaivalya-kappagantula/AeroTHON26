@@ -259,6 +259,8 @@ class PathPlannerNode(Node):
             "climb_clearance_m": d.climb_clearance_m,
             "body_below_camera_m": d.body_below_camera_m,
             "corridor_max_altitude_m": d.max_altitude_m,
+            "corridor_centre_slow_m": d.centre_slow_m,
+            "corridor_centre_min_advance": d.centre_min_advance,
         }
         for name, default in decl.items():
             self.declare_parameter(name, default)
@@ -272,6 +274,8 @@ class PathPlannerNode(Node):
             climb_clearance_m=float(gp("climb_clearance_m")),
             body_below_camera_m=float(gp("body_below_camera_m")),
             max_altitude_m=float(gp("corridor_max_altitude_m")),
+            centre_slow_m=float(gp("corridor_centre_slow_m")),
+            centre_min_advance=float(gp("corridor_centre_min_advance")),
         )
         self._c_alt = float(gp("corridor_altitude_m"))
         self._c_speed = float(gp("corridor_follow_speed_ms"))
@@ -867,6 +871,8 @@ class PathPlannerNode(Node):
         blocked_since = None
         last_mode = None
         last_cmd = None             # plan from the last valid frame
+        centre_line = None          # (lat, lon, axis ENU): the centreline at the last
+                                    # good wall fit — the blind exit run holds it
         self._perception = None
 
         while True:
@@ -953,7 +959,7 @@ class PathPlannerNode(Node):
                     continue
 
             # --- last metres: walls end ahead, too short to fit -> fly out ---
-            clear_to_go = last_cmd is not None and last_cmd.advance >= fp.lookahead_m - 1e-6
+            clear_to_go = last_cmd is not None and last_cmd.clear
             if not healthy and self._sensor_ok() and walls_end_s is not None \
                     and clear_to_go and walls_end_s - s <= self._c_exit_run_m:
                 if last_mode != "exit":
@@ -963,7 +969,18 @@ class PathPlannerNode(Node):
                 out_alt = last_cmd.alt if memory.active is not None else nominal
                 fe, fn = math.cos(c_axis), math.sin(c_axis)
                 step = fp.lookahead_m
-                lat, lon = mav.offset_gps(self._gps[0], self._gps[1], fn * step, fe * step)
+                back = 0.0
+                if centre_line is not None:
+                    # Blind: no walls to centre on. Hold the centreline as
+                    # last measured (GPS), so a sideways push (wind) is
+                    # still corrected instead of carried out of the corridor.
+                    lat0, lon0, a = centre_line
+                    d_n, d_e = mav.ne_offset(lat0, lon0, self._gps[0], self._gps[1])
+                    left = -d_e * math.sin(a) + d_n * math.cos(a)
+                    back = max(-fp.max_lateral_step_m, min(fp.max_lateral_step_m, -left))
+                d_e = fe * step - fn * back
+                d_n = fn * step + fe * back
+                lat, lon = mav.offset_gps(self._gps[0], self._gps[1], d_n, d_e)
                 mav.goto(self, lat, lon, out_alt, publish_count=1, yaw_enu=c_axis, log=False)
                 self._sleep_rest(t0)
                 continue
@@ -1018,6 +1035,17 @@ class PathPlannerNode(Node):
                 blocked_since = None
 
             heading = c_axis                            # corridor direction, ENU
+            if t0 - track.t < 0.5:
+                # centreline in GPS terms (track.centre: + = to the LEFT)
+                c_le, c_ln = -math.sin(c_axis), math.cos(c_axis)
+                lat_c, lon_c = mav.offset_gps(self._gps[0], self._gps[1],
+                                              c_ln * track.centre, c_le * track.centre)
+                centre_line = (lat_c, lon_c, c_axis)
+            self.get_logger().info(
+                f"[path_planner] {leg}: follow s={s:.1f} m, offset {-track.centre:+.2f} m "
+                f"(walls {track.walls}, {t0 - track.t:.2f} s old), step "
+                f"{cmd.lateral:+.2f} m across / {cmd.advance:.2f} m on, axis "
+                f"{math.degrees(c_axis):.0f} deg", throttle_duration_sec=0.5)
             fe, fn = math.cos(heading), math.sin(heading)
             d_e = fe * cmd.advance - fn * cmd.lateral
             d_n = fn * cmd.advance + fe * cmd.lateral

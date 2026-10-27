@@ -17,11 +17,13 @@
 # Any failed step after arming -> LAND in place. The RC transmitter (mode
 # switch) is the manual abort; Ctrl+C stops this node but does NOT land.
 #
-# FCU PARAMETERS ARE NEVER WRITTEN. Only runtime commands are sent: set mode,
+# FCU PARAMETERS ARE NEVER WRITTEN, except the throttle cap
+# (mav.apply_throttle_cap, MOT_SPIN_MAX) before arming, which every flight
+# applies. Otherwise only runtime commands are sent: set mode,
 # arm, takeoff, position targets, MAV_CMD_DO_CHANGE_SPEED (a per-flight speed
 # limit, not saved — WP_SPD / WPNAV_SPEED in Mission Planner unchanged) and
 # SET_MESSAGE_INTERVAL (telemetry rates, reset on reboot). Do not add
-# mav.set_fcu_param here.
+# any other mav.set_fcu_param here.
 #
 # If the FCU rejects the 0.25 m/s speed command the sweep is aborted (LAND),
 # rather than flown at the FCU's default WP_SPD (10 m/s on Copter 4.7).
@@ -320,6 +322,9 @@ class BcdSweepMission(Node):
                 self._result = False
                 return
             mav.request_message_intervals(self)
+            if not mav.apply_throttle_cap(self):
+                self._result = False
+                return
             if not self._acquire_home():
                 self._result = False
                 return

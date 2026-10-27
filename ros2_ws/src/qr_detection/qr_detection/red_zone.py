@@ -266,10 +266,25 @@ class RedZoneMap:
     cleared   : cells a hover window observed and found NOT red
     explained : confirmed (dilated by explain_margin_m) | cleared — red seen
                 there is not a new sighting
+
+    grow_known (off by default): red CONNECTED to a confirmed zone is added
+    to it while flying, with the hover window's evidence rule (red in at
+    least min_hit_ratio of at least min_obs frames that saw the cell), and
+    is not a new sighting. So a zone that comes into view piece by piece
+    (stopped beside it, only a slice is in view) needs one hover-confirm,
+    not one per slice. Red not connected to a confirmed zone still is a new
+    sighting. add_frame() returns the area grown.
+
+    confirm_in_flight (off by default; needs grow_known): the same evidence
+    rule also confirms red NOT connected to a known zone while flying, so the
+    first sight of a zone needs no hover either. The mission still brakes
+    for red that comes close before it is confirmed (unexplained() reports
+    how far away it is) and hover-confirms it as before.
     """
 
     def __init__(self, size_m=80.0, res_m=0.25, min_hit_ratio=0.5, min_obs=5,
-                 min_area_m2=0.0, explain_margin_m=0.3):
+                 min_area_m2=0.0, explain_margin_m=0.3, grow_known=False,
+                 confirm_in_flight=False):
         self.res = res_m
         self.n_cells = int(size_m / res_m)
         self.half = self.n_cells / 2.0
@@ -284,6 +299,11 @@ class RedZoneMap:
         self._win_hits: Optional[np.ndarray] = None
         self._win_obs: Optional[np.ndarray] = None
         self.window_frames = 0
+        self.grow_known = grow_known
+        self.confirm_in_flight = grow_known and confirm_in_flight
+        self._grow_hits = np.zeros(self.confirmed.shape, np.int32)
+        self._grow_obs = np.zeros_like(self._grow_hits)
+        self._k_touch = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 
     def _ne_to_px(self, ne: np.ndarray) -> np.ndarray:
         ne = ne.reshape(-1, 2)
@@ -302,12 +322,39 @@ class RedZoneMap:
             cv2.fillPoly(tmp, [self._ne_to_px(p) for p in polys_ne], 1)
         return tmp
 
+    def _connected_to_confirmed(self, red: np.ndarray) -> np.ndarray:
+        """The cells of `red` in the same 8-connected piece as a confirmed
+        cell (touching it, or joined to it through other red)."""
+        both = red | cv2.dilate(self.confirmed, self._k_touch)
+        n, labels = cv2.connectedComponents(both, connectivity=8)
+        if n <= 1:
+            return np.zeros_like(red)
+        keep = np.unique(labels[self.confirmed > 0])
+        keep = keep[keep > 0]
+        return (np.isin(labels, keep) & (red > 0)).astype(np.uint8)
+
     def unexplained_area(self, zones_ne: List[np.ndarray]) -> float:
-        """m^2 of red in this frame that is not already explained."""
+        """m^2 of red in this frame that is not already explained (with
+        grow_known, red connected to a confirmed zone is explained too)."""
+        return self.unexplained(zones_ne)[0]
+
+    def unexplained(self, zones_ne: List[np.ndarray], here_ne=None):
+        """(m^2, distance m) of the red in this frame that is not already
+        explained; the distance is from here_ne = (north, east) to the
+        nearest such cell, -1 when there is none or here_ne is None."""
         if not zones_ne:
-            return 0.0
-        new = self._raster(zones_ne) & (1 - self.explained)
-        return float(new.sum()) * self.res ** 2
+            return 0.0, -1.0
+        red = self._raster(zones_ne)
+        new = red & (1 - self.explained)
+        if self.grow_known and self.confirmed.any():
+            new &= 1 - self._connected_to_confirmed(red)
+        area = float(new.sum()) * self.res ** 2
+        if area == 0.0 or here_ne is None:
+            return area, -1.0
+        rows, cols = np.nonzero(new)
+        ne = self._px_to_ne(np.column_stack([cols, rows]))
+        dist = float(np.hypot(ne[:, 0] - here_ne[0], ne[:, 1] - here_ne[1]).min())
+        return area, max(0.0, dist - self.res / 2.0)
 
     @property
     def window_active(self) -> bool:
@@ -318,13 +365,33 @@ class RedZoneMap:
         self._win_obs = np.zeros_like(self._win_hits)
         self.window_frames = 0
 
-    def add_frame(self, footprint_ne: np.ndarray, zones_ne: List[np.ndarray]):
-        """Accumulate one frame; ignored when no window is open."""
-        if not self.window_active:
-            return
-        self._win_obs += self._raster([footprint_ne])
-        self._win_hits += self._raster(zones_ne)
-        self.window_frames += 1
+    def add_frame(self, footprint_ne: np.ndarray, zones_ne: List[np.ndarray]) -> float:
+        """Accumulate one frame into the open hover window; with no window
+        open and grow_known, grow the confirmed zones instead. Returns the
+        area grown (m^2, 0 in a window)."""
+        if self.window_active:
+            self._win_obs += self._raster([footprint_ne])
+            self._win_hits += self._raster(zones_ne)
+            self.window_frames += 1
+            return 0.0
+        if not (self.grow_known and (self.confirmed.any() or self.confirm_in_flight)):
+            return 0.0
+        self._grow_obs += self._raster([footprint_ne])
+        self._grow_hits += self._raster(zones_ne)
+        obs = self._grow_obs
+        valid = obs >= self.min_obs
+        red = np.zeros(obs.shape, np.uint8)
+        red[valid] = (self._grow_hits[valid] >= self.min_hit_ratio * obs[valid])
+        if self.confirm_in_flight:
+            add = red & (1 - self.confirmed)
+        else:
+            add = self._connected_to_confirmed(red) & (1 - self.confirmed)
+        if not add.any():
+            return 0.0
+        self.confirmed |= add
+        self.cleared &= 1 - self.confirmed
+        self.explained = cv2.dilate(self.confirmed, self._k_explain) | self.cleared
+        return float(add.sum()) * self.res ** 2
 
     def finish_window(self) -> float:
         """Close the window, merge it into the map. Returns the newly
@@ -377,6 +444,8 @@ class FrameResult:
     accepted: bool
     reason: str = ""
     new_red_m2: float = 0.0
+    grown_m2: float = 0.0          # added to known zones (grow_known)
+    new_red_dist_m: float = -1.0   # nadir to the nearest new red; -1 = none
 
 
 class RedZonePerception:
@@ -402,8 +471,9 @@ class RedZonePerception:
             p = self.cam.project_to_ned(c.reshape(-1, 2), st)
             if p is not None and len(p) >= 3:
                 zones_ne.append(p)
-        self.map.add_frame(footprint, zones_ne)
-        return FrameResult(True, "", self.map.unexplained_area(zones_ne))
+        grown = self.map.add_frame(footprint, zones_ne)
+        area, dist = self.map.unexplained(zones_ne, (st.n, st.e))
+        return FrameResult(True, "", area, grown, dist if area >= self.min_red_m2 else -1.0)
 
 
 # ----------------------------------------------------------------------------

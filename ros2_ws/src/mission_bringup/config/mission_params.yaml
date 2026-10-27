@@ -145,6 +145,11 @@ path_planner_node:
                                   # tops: above them the walls leave the slice
                                   # and the leg holds, then lands.
     corridor_follow_speed_ms: 0.5 # stage 0.3 -> 0.5 on hardware
+    # Centring first (NEW): more than 0.10 m off centre, the forward step
+    # shrinks linearly to min_advance of the lookahead at centre_slow_m, so
+    # more of the speed goes sideways against GPS drift / wind.
+    corridor_centre_slow_m: 0.30
+    corridor_centre_min_advance: 0.25
     corridor_rate_hz: 5.0
     corridor_lookahead_m: 0.8
     corridor_entry_timeout_s: 15.0
