@@ -28,6 +28,7 @@ setup(
             'ground_marker_node = qr_detection.ground_marker_node:main',
             'red_zone_node = qr_detection.red_zone_node:main',
             'sim_down_camera_node = qr_detection.sim_down_camera_node:main',
+            'sim_reference = qr_detection.sim_reference:main',
         ],
     },
 )

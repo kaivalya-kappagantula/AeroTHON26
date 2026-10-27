@@ -143,8 +143,7 @@ class PathPlannerNode(Node):
             if len(zone) >= 3:
                 self._red_zones.append(zone)
 
-        self.declare_parameter("arena_edge_margin_m", 1.0)
-        edge_margin = float(self.get_parameter("arena_edge_margin_m").value)
+        edge_margin = float(self.cfg.arena_edge_margin_m)   # declared by load_mission_config
         self._declare_corridor_params()
 
         # ----- Lawnmower (routed around red zones) -----

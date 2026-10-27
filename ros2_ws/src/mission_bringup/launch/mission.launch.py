@@ -76,6 +76,14 @@ def generate_launch_description():
     payload_node = mission_node_of("payload", "payload_node")
     qr_scanner_node = mission_node_of("qr_detection", "qr_scanner_node")
     ground_marker_node = mission_node_of("qr_detection", "ground_marker_node")
+    # Red no-fly mats in the arena (phase 3), on the same /down_frame feed
+    red_zone_node = Node(
+        package="qr_detection",
+        executable="red_zone_node",
+        name="red_zone_node",
+        output="screen",
+        parameters=[{"source": "topic"}],
+    )
     mission_node = mission_node_of("mission_manager", "mission_node")
 
     # ================================================================
@@ -160,6 +168,7 @@ def generate_launch_description():
         path_planner_node,
         qr_scanner_node,
         ground_marker_node,
+        red_zone_node,
         down_camera,
         oakd_launch,
         avoidance_launch,

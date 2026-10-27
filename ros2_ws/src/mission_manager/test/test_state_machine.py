@@ -105,3 +105,11 @@ def test_terminal_states_accept_nothing():
     _run(sm, FORWARD)
     with pytest.raises(TransitionNotAllowed):
         sm.abort()
+
+
+@pytest.mark.parametrize("found", [True, False])
+def test_arena_test_flight_lands_with_or_without_a_match(found):
+    sm = MissionSM()
+    _run(sm, ["auto_activate", "airborne", "qr_scanned", "entry_complete"]
+         + (["qr_matched"] if found else []) + ["arena_test_done", "touchdown"])
+    assert sm.state_id == "LANDED"
