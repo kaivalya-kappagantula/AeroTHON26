@@ -1,0 +1,79 @@
+# depthai_ros_driver params for the OAK-D Lite in avoidance service.
+#
+# Depth + colour, no neural net, no IMU. The avoidance stack consumes the depth
+# (/oak/stereo/image_raw, 16UC1 mm) plus its camera_info; the colour stream
+# (/oak/rgb/image_raw, 640x360) feeds banner_node (green entrance banner) and
+# the RGB wall-base detector in corridor_perception_node (white walls give
+# little stereo depth). Pitch for horizon compensation comes from the FC IMU
+# over MAVROS — not the camera's.
+#
+# Three OAK-D Lite specifics that the driver defaults get wrong:
+#   * the RGBD default pipeline uploads a mobilenet blob at startup; on a USB2
+#     link that upload throws XLinkWriteError and takes the container down.
+#     i_nn_type: none keeps RGBD from loading one (the driver's own rgbd.yaml
+#     does the same). If the driver still tries, go back to i_pipeline_type
+#     Depth — the corridor then runs on depth walls only and there is no
+#     banner.
+#   * mono sensors are OV7251, which has no 720p mode (the driver default) and
+#     no 400p either — both fall back to 480P with only a WARN. Note the map
+#     keys are UPPERCASE ('480P'); a lowercase '480p' misses the map entirely
+#     and warns "not supported ... using default" even though 480P is exactly
+#     what you asked for.
+#   * stereo.i_width/i_height are what the driver stamps into the depth
+#     camera_info, and they are hardcoded 1280x720 unless i_align_depth is true
+#     — that branch, and only that branch, reads the real sensor size
+#     (stereo_param_handler.cpp:86-105). We align to nothing, so we must pin
+#     them by hand. Left at the default the driver publishes 720p intrinsics
+#     (fx 904, cx 647) alongside a 640x480 depth image; sector_builder reads
+#     fx/cx from camera_info, so that mismatch compresses every bearing by ~2x
+#     and lands obstacles in the wrong bins, silently and plausibly.
+#     Verified on this device: pinning them makes camera_info 640x480 fx ~452.
+#
+#   ros2 launch depthai_ros_driver camera.launch.py \
+#       params_file:=<share>/obstacle_avoidance/config/oak_d_lite_depth.yaml
+/oak:
+  ros__parameters:
+    camera:
+      i_pipeline_type: RGBD       # stereo depth + colour, no NN
+      i_nn_type: none             # NO blob upload (see header)
+      i_enable_imu: false         # pitch comes from the FC IMU over MAVROS
+      i_enable_ir: false          # OAK-D Lite has no IR projector
+
+    # Colour: 1080P scaled by 1/3 in the ISP -> 640x360, the size
+    # green_detect.py was tuned at (its morphology kernels are in pixels).
+    # 15 fps like the mono cameras keeps USB2 well under its limit.
+    # Check once on the Pi: ros2 topic echo --once /oak/rgb/camera_info
+    # must say width 640, height 360.
+    rgb:
+      i_resolution: '1080P'
+      i_set_isp_scale: true
+      i_isp_num: 1
+      i_isp_den: 3
+      i_fps: 15.0
+
+    # i_width/i_height must match the resolution the sensor actually delivers —
+    # they are the numbers that reach camera_info, and nothing cross-checks them.
+    left:
+      i_resolution: '480P'      # key is case-sensitive: monoResolutionMap uses '480P'
+      i_width: 640
+      i_height: 480
+      i_fps: 15.0                 # builder publishes at 10 Hz; 15 gives headroom
+    right:
+      i_resolution: '480P'      # key is case-sensitive: monoResolutionMap uses '480P'
+      i_width: 640
+      i_height: 480
+      i_fps: 15.0
+
+    stereo:
+      i_publish_topic: true
+      i_output_disparity: false   # we want metric depth, 16UC1 millimetres
+      i_align_depth: false        # no RGB stream to align to; keeps depth in the
+                                  # right-mono frame that camera_info describes
+      i_width: 640                # MUST match the mono output — see header note.
+      i_height: 480               # These are the camera_info dims, not left.i_*.
+      i_subpixel: false           # costs bandwidth; 6 m max report doesn't need it
+      i_lr_check: true
+      i_stereo_conf_threshold: 200   # stricter: drops low-confidence matches
+      i_enable_speckle_filter: true  # removes small noisy blobs
+      i_depth_filter_size: 5         # 5x5 median filter            # rejects occlusion-edge fliers — cheap, worth it
+      i_extended_disparity: false

@@ -1,0 +1,13 @@
+# stage1_proximity.param — Stage 1 (ArduPilot leg, synthetic data).
+# Just gets our LaserScan onto ArduPilot's proximity so PRX shows in the
+# dataflash log and Mission Planner's proximity radar (Gates 1A/1B/1C).
+# The FC does NOT act on it yet — that is Stage 2.
+#
+# Load (MAVProxy):  param load stage1_proximity.param
+#        (mavros):  ros2 run mavros mavparam load stage1_proximity.param
+# REBOOT the FC after loading — PRX1_TYPE takes effect on reboot.
+PRX1_TYPE        2
+# PRX1_YAW_CORR intentionally omitted: the yaw-correction param name is
+# version-specific (PRX1_YAWCORR on some builds) and MAVProxy rejects an
+# unknown name. It defaults to 0 = no correction, which is what we want since
+# we send body-frame. Gate 1C verifies this empirically.

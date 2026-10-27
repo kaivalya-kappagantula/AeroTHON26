@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mission_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch files, mission parameters and SITL script for Mission 2.</description>
+  <maintainer email="jaya9899@todo.todo">jaya9899</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>mission_manager</exec_depend>
+  <exec_depend>path_planner</exec_depend>
+  <exec_depend>payload</exec_depend>
+  <exec_depend>qr_detection</exec_depend>
+  <exec_depend>obstacle_avoidance</exec_depend>
+  <exec_depend>mavros</exec_depend>
+  <exec_depend>depthai_ros_driver</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

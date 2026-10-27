@@ -1,0 +1,31 @@
+# colcon output (both workspaces)
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# SITL runtime output (sim_vehicle.py writes these into its cwd)
+eeprom.bin
+mav.parm
+*.tlog
+*.tlog.raw
+terrain/
+logs/
+
+# Flight / test output written by the tools
+*.csv
+*.BIN
+
+# Separate repos / reference material sometimes kept next to the packages
+depthai-ros/
+vision_opencv/
+AeroTHON-main/
+
+# Editor
+.vscode/
+.idea/

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Fast DDS profile for full-resolution camera frames (1280x720 BGR = 2.7 MB).
+
+  With the defaults, a sample that big does not fit Fast DDS' shared-memory
+  segment and is sent as many UDP fragments; on a busy host, losing one
+  fragment drops the whole frame. Measured in SITL: a Python subscriber got
+  ~4 of 30 fps. A 32 MB shared-memory segment carries whole frames between
+  processes on the same machine; UDPv4 stays for discovery and other hosts.
+
+  Used by qr_bcd_mission.launch.py / bcd_redzone_mission.launch.py through
+  FASTRTPS_DEFAULT_PROFILES_FILE (rmw_fastrtps, the Jazzy default).
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>shm_large</transport_id>
+      <type>SHM</type>
+      <segment_size>33554432</segment_size>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>udp</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="large_frames" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>shm_large</transport_id>
+        <transport_id>udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

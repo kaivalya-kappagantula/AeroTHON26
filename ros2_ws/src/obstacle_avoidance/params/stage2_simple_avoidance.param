@@ -1,0 +1,19 @@
+# stage2_simple_avoidance.param — Stage 2 (the FC acts on the data).
+# Adds ArduPilot's simple (reactive) avoidance on top of the Stage 1 proximity
+# input. Gate 2: in Loiter, push toward the synthetic wall; the drone refuses
+# to close within the margin.
+#
+# Simple avoidance runs HORIZONTALLY only in AltHold and Loiter — it is a test
+# instrument here, not flight-phase protection. AVOID_MARGIN is NOT OA_MARGIN_MAX
+# (trap #6): this margin is the one that moves in Loiter.
+#
+# AVOID_BEHAVE: 0=Slide, 1=Stop. Use Stop while testing; Slide only after Gate 5.
+# REBOOT after loading (PRX1_TYPE).
+PRX1_TYPE        2
+# PRX1_YAW_CORR intentionally omitted: the yaw-correction param name is
+# version-specific (PRX1_YAWCORR on some builds) and MAVProxy rejects an
+# unknown name. It defaults to 0 = no correction, which is what we want since
+# we send body-frame. Gate 1C verifies this empirically.
+AVOID_ENABLE     7
+AVOID_MARGIN     0.6
+AVOID_BEHAVE     1

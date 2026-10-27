@@ -1,0 +1,14 @@
+# Python packages that apt / rosdep do not provide, pinned to the versions the
+# stack is tested with. setup.sh installs them for the SYSTEM python3 (the one
+# ROS 2 nodes run under) with --user. Do not install them into a venv: a venv's
+# NumPy 2 breaks ROS Jazzy's cv_bridge.
+
+python-statemachine==3.2.2      # mission_manager state machine
+pymavlink==2.4.49               # tools/waypoint_mission.py, test_mavlink.py
+
+# OpenCV 4.x with the Aruco-based QR detector. NOT 5.x: OpenCV 5 changed the
+# image type codes and ROS Jazzy's cv_bridge then crashes every camera node.
+opencv-contrib-python==4.10.0.84
+
+# Keep NumPy 1.x: cv_bridge is built against it.
+numpy<2

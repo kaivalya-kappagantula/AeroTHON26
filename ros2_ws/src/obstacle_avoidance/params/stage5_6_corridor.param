@@ -1,0 +1,36 @@
+# stage5_6_corridor.param — Stages 5 (arena) and 6 (corridors).
+#
+# The corridors are 5 ft (1.524 m) wide and are flown by path_planner from
+# the OAK-D corridor fit (centring, side choice, climb-over), as GUIDED
+# position targets. ArduPilot's object-avoidance path planner is OFF:
+# BendyRuler passes a gap only if gap >= 2 x OA_MARGIN_MAX, and a 30-40 %
+# obstacle in 1.524 m leaves <= ~0.9 m (against a wall) or ~0.45 m each side
+# (centred) — the margin would have to be smaller than the drone itself.
+#
+# GUID_OPTIONS must be 0 (bit 6 clear): GUIDED position targets then use the
+# plain position controller and honour DO_CHANGE_SPEED. With bit 6 set they
+# would go through the waypoint navigator at WP_SPD.
+#
+# Proximity (PRX1_TYPE 2) stays on: sector_builder feeds OBSTACLE_DISTANCE so
+# simple avoidance protects the vehicle when the PILOT flies it (LOITER after
+# an RC takeover inside a corridor). Simple avoidance is NOT applied to GUIDED
+# position targets. AVOID_MARGIN 0.4: walls are 0.76 m from the centreline;
+# 0.6 would leave the pilot ~0.3 m of lateral room.
+#
+# REBOOT after loading (PRX1_TYPE and OA_TYPE need it).
+PRX1_TYPE        2
+# PRX1_YAW_CORR intentionally omitted: the yaw-correction param name is
+# version-specific (PRX1_YAWCORR on some builds) and MAVProxy rejects an
+# unknown name. It defaults to 0 = no correction, which is what we want since
+# we send body-frame. Gate 1C verifies this empirically.
+OA_TYPE          0
+GUID_OPTIONS     0
+AVOID_ENABLE     7
+AVOID_MARGIN     0.4
+AVOID_BEHAVE     1
+# GCS failsafe = Land (5). Land, not RTL. RTL path may cross corridor walls:
+# an RTL triggered mid-corridor climbs to RTL_ALT and flies a straight line
+# home, hitting a wall if RTL_ALT is below wall height or the climb has not
+# finished. Land (5) sets down in place, recoverable. (The spec's 'Brake'
+# option does not exist on Copter FS_GCS_ENABLE.)
+FS_GCS_ENABLE    5

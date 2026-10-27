@@ -1,0 +1,9 @@
+# stage0_bench.param — Stage 0 bench work + corridor GPS survey.
+# The FC is powered but NEVER armed here, so nothing logs by default. This
+# enables dataflash logging while disarmed so Gate 0 (depth pipeline units,
+# intrinsics, rate/thermal, sun/dropout baselines) and the corridor GPS survey
+# (GPS.NSats, GPS.HDop, position wander while stationary) are captured.
+#
+# No avoidance params — Stage 0 is about the camera/driver and GPS, not our
+# nodes or ArduPilot avoidance. No reboot needed.
+LOG_DISARMED     1
