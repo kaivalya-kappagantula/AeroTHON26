@@ -93,8 +93,9 @@ def load_mission_config(node) -> MissionConfig:
     cfg.qr_fallback_id        = _declare(node, "qr_fallback_id", "QR_TARGET_DEMO_ID")
     # Reference QR in the air (mission_manager/reference_qr.py), at
     # cruise_altitude_m over the launch point; the QR is at most ~1 m ahead.
-    cfg.qr_step_m             = _declare(node, "qr_step_m", 0.5)          # search step, none in view
-    cfg.qr_max_steps          = _declare(node, "qr_max_steps", 4)         # search steps before giving up
+    # none in view: hover at these along-nose offsets (m, + = forward) from
+    # where the search began, in order — never sideways
+    cfg.qr_search_offsets_m   = _declare(node, "qr_search_offsets_m", [0.3, -0.3, 0.6, -0.6])
     cfg.qr_center_tol_m       = _declare(node, "qr_center_tol_m", 0.3)    # close enough = no move
     cfg.qr_center_passes      = _declare(node, "qr_center_passes", 2)     # locate -> move, repeated
     cfg.qr_initial_advance_m  = _declare(node, "qr_initial_advance_m", 1.0)  # fly this far ahead first

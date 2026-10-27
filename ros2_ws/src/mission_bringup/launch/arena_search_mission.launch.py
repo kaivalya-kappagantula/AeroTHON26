@@ -37,6 +37,9 @@
 #                   with scan_ref:=true (read in this flight).
 #   rc_switch       true = wait for the RC CH7 switch to start
 #   cam_yaw         Cam3 image-top direction vs the nose, deg clockwise
+#   lens_pos        Cam3 manual focus, dioptres = 1 / distance (m): 0.4 =
+#                   2.5 m, sharp from ~2 to ~3 m. Check on the ground first:
+#                   rpicam-still -n --autofocus-mode manual --lens-position 0.4 -o t.jpg
 #   awb_mode/af_mode  Cam3 white balance (5 = daylight: keeps red stable) /
 #                   autofocus (2 = continuous)
 #   sim             true = SITL: no camera_ros; sim_down_camera_node renders
@@ -133,7 +136,11 @@ def generate_launch_description():
         DeclareLaunchArgument("rc_switch", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("cam_yaw", default_value="0.0"),
         DeclareLaunchArgument("awb_mode", default_value="5"),
-        DeclareLaunchArgument("af_mode", default_value="2"),
+        # Manual focus: this libcamera build cannot read the IMX708's PDAF
+        # data ("PDAF data in unsupported format"), so autofocus never
+        # focuses and the frames were blurry in flight.
+        DeclareLaunchArgument("af_mode", default_value="0"),
+        DeclareLaunchArgument("lens_pos", default_value="0.4"),
         DeclareLaunchArgument("sim_qr_codes", default_value=SIM_QR_CODES),
         DeclareLaunchArgument("sim_red_zones", default_value=SIM_RED_ZONES),
         DeclareLaunchArgument("sim_reference_text", default_value=""),
@@ -159,6 +166,7 @@ def generate_launch_description():
             "height": 720,
             "format": "BGR888",
             "AfMode": ParameterValue(LaunchConfiguration("af_mode"), value_type=int),
+            "LensPosition": _float("lens_pos"),
             "AwbMode": ParameterValue(LaunchConfiguration("awb_mode"), value_type=int),
         }],
         remappings=[("/camera/image_raw", "/down_frame")],

@@ -11,11 +11,12 @@
 #      of it — so the search starts over it.
 #   1. FIND: /perception/locate_qr reports where a QR is relative to the
 #      drone (detection only — works before the QR is readable, and for a QR
-#      that holds no text). None in view -> step forward qr_step_m along the
-#      heading the drone was placed with and look again (qr_max_steps). The
-#      QR is at most ~1 m ahead of the launch point and the camera sees
-#      about +-2 m at 5 m, so it is normally in view without a step.
-#   2. CENTRE over it: locate -> move, qr_center_passes times.
+#      that holds no text). None in view -> hover a little FORWARD or BACK of
+#      that point along the placed heading, never sideways
+#      (qr_search_offsets_m, in order) and look again. The camera's short
+#      side runs along the nose (+-1.15 m at 3 m), its long side across.
+#   2. CENTRE over it, along the nose only (forward/back): locate -> move,
+#      qr_center_passes times. Sideways it only has to be in the frame.
 #   3. READ: /perception/scan_qr (same QR in 3 frames, by text or by
 #      picture); a timed-out read re-centres and tries again
 #      (qr_scan_attempts). qr_scanner_node stores the result — text ("" if
@@ -117,28 +118,31 @@ class ReferenceQr:
         return n, e, f, r
 
     def _find_and_center(self) -> bool:
-        """Search (step forward) until a QR is in view, then centre over it."""
+        """Look here, then a little forward / back along the nose until a QR
+        is in view; then centre over it along the nose."""
         cfg = self.cfg
-        found = None
-        for step in range(int(cfg.qr_max_steps) + 1):
-            found = self._locate()
+        found = self._locate()
+        at = 0.0                          # along-nose offset from where the search began
+        for target in [float(x) for x in cfg.qr_search_offsets_m]:
             if found is not None:
                 break
-            if step < int(cfg.qr_max_steps):
-                self._log().info("[reference_qr] No QR in view — stepping forward")
-                if not self._step_forward(float(cfg.qr_step_m)):
-                    break
+            self._log().info(f"[reference_qr] No QR in view — trying {target:+.1f} m "
+                             f"along the nose")
+            if not self._step_forward(target - at):
+                break
+            at = target
+            found = self._locate()
         if found is None:
             self._log().warn("[reference_qr] QR not found")
             return False
 
         tol = float(cfg.qr_center_tol_m)
         for i in range(int(cfg.qr_center_passes)):
-            n, e, _, _ = found
-            if math.hypot(n, e) <= tol:
-                self._log().info("[reference_qr] Centred over the QR")
+            _, _, fwd, _ = found
+            if abs(fwd) <= tol:
+                self._log().info("[reference_qr] Centred over the QR (along the nose)")
                 return True
-            self._move_by(n, e, f"centre pass {i + 1}")
+            self._step_forward(fwd)
             found = self._locate()
             if found is None:
                 self._log().warn("[reference_qr] Lost the QR after moving — reading here")

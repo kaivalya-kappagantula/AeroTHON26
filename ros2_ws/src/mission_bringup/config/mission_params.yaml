@@ -60,8 +60,8 @@ mission_node:
     qr_fallback_id: "QR_TARGET_DEMO_ID"
     qr_initial_advance_m: 1.0           # NEW: first fly this far ahead (the QR
                                         # is placed ~1 m in front of the drone)
-    qr_step_m: 0.5                      # search step when no QR in view
-    qr_max_steps: 4                     # search steps before giving up
+    qr_search_offsets_m: [0.3, -0.3, 0.6, -0.6]  # NEW: no QR in view: hover this far
+                                        # forward (+) / back (-) along the nose, in order
     qr_center_tol_m: 0.3                # close enough = no move
     qr_center_passes: 2                 # locate -> move, repeated
     qr_max_radius_m: 4.0                # never further from takeoff
