@@ -31,6 +31,9 @@
 # confirm_in_flight (default false; needs grow_known_zones): red not connected
 # to a known zone is confirmed in flight too, with the same evidence rule, so
 # the first sight of the mat needs no hover either (RedZoneMap).
+# ignore_regions (default "": none): JSON [[x0, y0, x1, y1], ...], fractions
+# of the frame — image areas never counted as red (the drone's own orange
+# leg mounts). live_view_node draws them (same parameter) to check them.
 #
 # No message on /red_zone/sighting means "blind" (camera dead, telemetry
 # stale, too low or too tilted): the mission treats silence as unsafe.
@@ -60,7 +63,7 @@ from std_srvs.srv import Trigger
 
 from qr_detection.red_zone import (CameraModel, RedConfig, RedZoneMap,
                                    RedZonePerception, RpicamVidSource,
-                                   VehicleState, euler_ned_from_enu_quat)
+                                   VehicleState, euler_ned_from_enu_quat, parse_regions)
 
 _M_PER_DEG_LAT = 111_320.0
 # GPS / attitude / rel_alt arrive at 10-20 Hz; a busy Pi delays them. 0.75 s
@@ -122,6 +125,9 @@ class RedZoneNode(Node):
         self.confirm_min_frames = int(gp("confirm_min_frames", 15))
         self.s_min = int(gp("s_min", 100))
         self.v_min = int(gp("v_min", 60))
+        # JSON [[x0, y0, x1, y1], ...], fractions of the frame: image areas
+        # never counted as red (the drone's own orange leg mounts)
+        self.ignore_regions = parse_regions(str(gp("ignore_regions", "")))
         self.max_tilt = float(gp("max_tilt_deg", 15.0))
         self.min_agl = float(gp("min_agl_m", 1.5))
         # Red zones are large: half resolution is plenty and ~4x cheaper,
@@ -239,7 +245,8 @@ class RedZoneNode(Node):
                     h, w = frame.shape[:2]
                     cam = CameraModel.cam3_default(w, h, self.mount_yaw)
                     self.perception = RedZonePerception(
-                        cam, RedConfig(s_min=self.s_min, v_min=self.v_min), self.map,
+                        cam, RedConfig(s_min=self.s_min, v_min=self.v_min,
+                                       ignore_regions=self.ignore_regions), self.map,
                         min_red_m2=self.min_red_m2, max_tilt_deg=self.max_tilt,
                         min_agl=self.min_agl)
                     ahead, side = cam.footprint_half_m(2.0)

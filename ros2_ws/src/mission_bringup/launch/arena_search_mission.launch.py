@@ -16,12 +16,18 @@
 # ahead along its nose and `width` m to its right.
 #
 #   length, width   test arena (m), ahead / to the right of the takeoff point
+#   offset          the arena starts this far ahead of the takeoff point (m)
+#   scan_ref        true = PHASES 1 + 3: read the reference QR in the air
+#                   first (at alt: cruise_altitude_m := alt for this run;
+#                   place it <= ~1 m ahead, nose at it), then sweep. Use
+#                   offset:=3 so the reference QR lies outside the arena.
 #   alt             sweep altitude (m)                       [arena_alt_m]
 #   speed           sweep speed (m/s)                        [arena_sweep_speed_ms]
 #   hover           hover over the match before landing (s)
 #   use_config      true = fly arena_corners_lat/lon from mission_params.yaml
 #   reference_file  the reference QR (phase 1 stores it there); sim: made
-#                   from sim_reference_text when left empty
+#                   from sim_reference_text when left empty. Not loaded
+#                   with scan_ref:=true (read in this flight).
 #   rc_switch       true = wait for the RC CH7 switch to start
 #   cam_yaw         Cam3 image-top direction vs the nose, deg clockwise
 #   awb_mode/af_mode  Cam3 white balance (5 = daylight: keeps red stable) /
@@ -32,6 +38,9 @@
 #                   x 0..width, y 0..length); fcu_url defaults to SITL's
 #   sim_reference_text  the QR text the SITL reference is made from ("" = a
 #                   QR holding no information; matched by picture)
+#   red_ignore      image areas red_zone_node never counts as red (the
+#                   drone's orange leg mounts): JSON [[x0,y0,x1,y1],...],
+#                   fractions of the frame; drawn grey on the live view
 #   live_view       true = live_view_node streams the down camera (with a
 #                   status overlay) to http://<drone>:live_view_port/
 #
@@ -66,8 +75,10 @@ def _scanner(context, *args, **kwargs):
     """qr_scanner_node with the reference loaded. SITL with no reference_file:
     one made from sim_reference_text."""
     sim = LaunchConfiguration("sim").perform(context) == "true"
-    ref = os.path.expanduser(LaunchConfiguration("reference_file").perform(context))
-    if sim and not ref:
+    scan_ref = LaunchConfiguration("scan_ref").perform(context) == "true"
+    ref = ("" if scan_ref else
+           os.path.expanduser(LaunchConfiguration("reference_file").perform(context)))
+    if sim and not ref and not scan_ref:
         from qr_detection.sim_reference import make_reference_record
         import json
         text = LaunchConfiguration("sim_reference_text").perform(context)
@@ -98,6 +109,9 @@ def generate_launch_description():
                 ["'tcp://127.0.0.1:5760' if '", sim, "' == 'true' else '/dev/ttyAMA0:921600'"])),
         DeclareLaunchArgument("length", default_value="25.0"),
         DeclareLaunchArgument("width", default_value="25.0"),
+        DeclareLaunchArgument("offset", default_value="0.0"),
+        DeclareLaunchArgument("scan_ref", default_value="false", choices=["true", "false"]),
+        DeclareLaunchArgument("red_ignore", default_value=""),
         DeclareLaunchArgument("alt", default_value="10.0"),
         DeclareLaunchArgument("speed", default_value="0.5"),
         DeclareLaunchArgument("hover", default_value="5.0"),
@@ -160,7 +174,9 @@ def generate_launch_description():
         output="screen",
         # red confirmed in flight (no hover), and red joined to it added
         parameters=[{"source": "topic", "mount_yaw_deg": _float("cam_yaw"),
-                     "grow_known_zones": True, "confirm_in_flight": True}],
+                     "grow_known_zones": True, "confirm_in_flight": True,
+                     "ignore_regions": ParameterValue(LaunchConfiguration("red_ignore"),
+                                                      value_type=str)}],
     )
 
     mission = Node(
@@ -174,13 +190,23 @@ def generate_launch_description():
             "arena_test_use_config": ParameterValue(LaunchConfiguration("use_config"),
                                                     value_type=bool),
             "arena_test_hover_s": _float("hover"),
+            "arena_test_offset_m": _float("offset"),
+            "arena_test_scan_reference": ParameterValue(LaunchConfiguration("scan_ref"),
+                                                        value_type=bool),
+            # phase 1 reads the reference at cruise_altitude_m: the sweep's
+            # altitude when it is flown here, else the yaml's
+            "cruise_altitude_m": ParameterValue(PythonExpression(
+                ["float('", LaunchConfiguration("alt"), "') if '",
+                 LaunchConfiguration("scan_ref"), "' == 'true' else ",
+                 _yaml_value(mission_params, "cruise_altitude_m")]), value_type=float),
             "arena_alt_m": _float("alt"),
             "arena_sweep_speed_ms": _float("speed"),
             "require_rc_switch": ParameterValue(LaunchConfiguration("rc_switch"), value_type=bool),
             "require_avoidance_sensor": False,    # no OAK-D pipeline in this test
             # SITL simulates a 3S pack (12.6 V); on the drone the yaml's value
             "battery_critical_v": ParameterValue(PythonExpression(
-                ["10.5 if '", sim, "' == 'true' else ", _yaml_battery_v(mission_params)]),
+                ["10.5 if '", sim, "' == 'true' else ",
+                 _yaml_value(mission_params, "battery_critical_v")]),
                 value_type=float),
         }],
     )
@@ -192,7 +218,9 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(LaunchConfiguration("live_view")),
         parameters=[{"port": ParameterValue(LaunchConfiguration("live_view_port"),
-                                            value_type=int)}],
+                                            value_type=int),
+                     "ignore_regions": ParameterValue(LaunchConfiguration("red_ignore"),
+                                                      value_type=str)}],
     )
 
     # Full-resolution sim frames (2.7 MB) must go through shared memory or
@@ -215,8 +243,8 @@ def generate_launch_description():
     ])
 
 
-def _yaml_battery_v(mission_params: str) -> str:
-    """battery_critical_v as mission_params.yaml sets it (hardware value)."""
+def _yaml_value(mission_params: str, name: str) -> str:
+    """A mission_node parameter as mission_params.yaml sets it (hardware value)."""
     import yaml
     with open(mission_params) as f:
-        return str(yaml.safe_load(f)["mission_node"]["ros__parameters"]["battery_critical_v"])
+        return str(yaml.safe_load(f)["mission_node"]["ros__parameters"][name])

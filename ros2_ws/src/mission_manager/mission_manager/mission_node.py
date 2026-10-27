@@ -49,8 +49,8 @@ class MissionAbort(Exception):
 
     kind:
       'pilot'   — RC auto switch low: pilot takes over (LOITER).
-      'battery' — battery critical: ArduPilot BATT_FS is primary; we only stop
-                  commanding so we never fight the FC failsafe.
+      'battery' — battery critical: ArduPilot BATT_FS is primary; if it has
+                  not taken over (still GUIDED) we command LAND ourselves.
       'fc'      — the FC left GUIDED in flight (its own failsafe or a pilot
                   mode change): stop commanding so we never fight it.
       'failure' — companion-detected failure (sensor dead, leg failed, ...):
@@ -645,9 +645,22 @@ class MissionNode(Node):
                 if self.sm.state_id not in ("LANDED", "RC_MODE", "ABORTED"):
                     self.sm.failsafe()
                 if a.kind == "battery":
-                    self.get_logger().error(
-                        "[mission_node] Leaving control to ArduPilot battery failsafe "
-                        "(BATT_FS_CRT_ACT). Make sure it is configured.")
+                    # ArduPilot's battery failsafe acts first if it is set (it
+                    # leaves GUIDED). Still in GUIDED = it did nothing (seen on
+                    # the drone, BATT_FS_*_ACT 0): land here rather than hover
+                    # on a draining pack.
+                    st = self.mavros_state
+                    if self._armed() and self._airborne and st is not None \
+                            and st.mode == "GUIDED":
+                        self.get_logger().error(
+                            "[mission_node] Battery critical — LANDING here (ArduPilot "
+                            "battery failsafe did not take over)")
+                        if not mav.land(self):
+                            mav.land(self)
+                    else:
+                        self.get_logger().error(
+                            "[mission_node] Battery critical — ArduPilot failsafe in control "
+                            f"({st.mode if st else '?'})")
                 elif a.kind == "fc":
                     self.get_logger().error(
                         "[mission_node] FC is in control — companion stopped commanding")

@@ -533,13 +533,17 @@ class ArenaSearch:
         target = node.sm.mission_target_qr
         if target:
             node.delivery_id_pub.publish(String(data=target))
-        if not self._start_scan():
-            self._log().error("[arena] qr_scanner_node did not start the arena scan — "
-                              "sweeping without QR matching")
-        self._enter_speed()
-        self._sight_after = time.monotonic()
+        # Listen BEFORE the scan starts: a QR already under the drone (the
+        # reference, read just before) is confirmed within a few frames, and
+        # a match dropped here was never re-scanned — the scanner stopped and
+        # the whole sweep went without matching (SITL, phase 1 + 3 at 3 m).
         self._watch_match = True
         try:
+            if not self._start_scan():
+                self._log().error("[arena] qr_scanner_node did not start the arena scan — "
+                                  "sweeping without QR matching")
+            self._enter_speed()
+            self._sight_after = time.monotonic()
             end = self._sweep(sweep.segments, deadline)
             if end != "target":
                 self._log().warn(f"[arena] swept the arena: NO matching QR "

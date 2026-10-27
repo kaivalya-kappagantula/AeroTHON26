@@ -16,6 +16,8 @@
 #   max_fps      stream frame rate cap                        [10.0]
 #   jpeg_quality 0-100                                        [70]
 #   topic        image topic                                  [/down_frame]
+#   ignore_regions  red_zone_node's masked image areas, drawn as grey boxes
+#                JSON [[x0, y0, x1, y1], ...] frame fractions  [""]
 
 import json
 import threading
@@ -29,6 +31,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
+
+from qr_detection.red_zone import parse_regions
 
 PAGE = b"""<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -46,12 +50,14 @@ class LiveViewNode(Node):
         self.declare_parameter("max_fps", 10.0)
         self.declare_parameter("jpeg_quality", 70)
         self.declare_parameter("topic", "/down_frame")
+        self.declare_parameter("ignore_regions", "")
         gp = lambda n: self.get_parameter(n).value
         self.port = int(gp("port"))
         self.width = int(gp("width"))
         self.period = 1.0 / max(float(gp("max_fps")), 0.5)
         self.quality = int(gp("jpeg_quality"))
         topic = str(gp("topic"))
+        self.ignore = parse_regions(str(gp("ignore_regions")))
 
         self._bridge = CvBridge()
         self._jpeg = None               # latest encoded frame
@@ -151,6 +157,11 @@ class LiveViewNode(Node):
             cv2.putText(img, s, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1)
             y += 22
         h, w = img.shape[:2]
+        for x0, y0, x1, y1 in self.ignore:
+            cv2.rectangle(img, (int(x0 * w), int(y0 * h)), (int(x1 * w), int(y1 * h)),
+                          (160, 160, 160), 2)
+            cv2.putText(img, "ignored", (int(x0 * w) + 4, int(y1 * h) - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (160, 160, 160), 1)
         cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 0), cv2.MARKER_CROSS, 24, 1)
         if self._red:
             cv2.rectangle(img, (0, 0), (w - 1, h - 1), (0, 0, 255), 6)

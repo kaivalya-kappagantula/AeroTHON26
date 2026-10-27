@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import subprocess
 import threading
@@ -230,6 +231,23 @@ class RedConfig:
     s_min: int = 100
     v_min: int = 60
     morph_px: int = 5
+    # image areas never counted as red (the drone's own orange leg mounts):
+    # (x0, y0, x1, y1) as fractions of the frame width / height
+    ignore_regions: tuple = ()
+
+
+def parse_regions(text: str) -> tuple:
+    """ignore_regions parameter: JSON [[x0, y0, x1, y1], ...], fractions of
+    the frame (0-1). "" -> none. Raises ValueError on a malformed value."""
+    if not text.strip():
+        return ()
+    out = []
+    for r in json.loads(text):
+        x0, y0, x1, y1 = (float(v) for v in r)
+        if not (0.0 <= x0 < x1 <= 1.0 and 0.0 <= y0 < y1 <= 1.0):
+            raise ValueError(f"ignore region {r}: need 0 <= x0 < x1 <= 1, 0 <= y0 < y1 <= 1")
+        out.append((x0, y0, x1, y1))
+    return tuple(out)
 
 
 class RedDetector:
@@ -243,6 +261,9 @@ class RedDetector:
         lo = cv2.inRange(hsv, (0, c.s_min, c.v_min), (c.h_low_max, 255, 255))
         hi = cv2.inRange(hsv, (c.h_high_min, c.s_min, c.v_min), (179, 255, 255))
         m = cv2.bitwise_or(lo, hi)
+        h, w = m.shape[:2]
+        for x0, y0, x1, y1 in c.ignore_regions:
+            m[int(y0 * h):int(round(y1 * h)), int(x0 * w):int(round(x1 * w))] = 0
         m = cv2.morphologyEx(m, cv2.MORPH_OPEN, self.k)
         return cv2.morphologyEx(m, cv2.MORPH_CLOSE, self.k)
 
