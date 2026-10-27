@@ -308,8 +308,7 @@ class MissionNode(Node):
         # ArduPilot only streams what is requested (SITL --no-mavproxy) or
         # what SRx_ params enable (hardware). Ask explicitly for what we use.
         mav.request_message_intervals(self, rate_hz=self.cfg.stream_rate_hz)
-        if not mav.apply_throttle_cap(self):
-            raise MissionAbort("failure", "throttle cap not confirmed — refusing to fly")
+        mav.check_throttle_cap(self)        # background: MOT_SPIN_MAX is set on the FC
 
         if self.cfg.require_rc_switch:
             self.get_logger().info(

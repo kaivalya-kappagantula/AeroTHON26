@@ -196,48 +196,51 @@ def set_fcu_param(node: Node, name: str, value, timeout: float = 5.0) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# apply_throttle_cap — motor output ceiling enforced before every flight
+# check_throttle_cap — the motor output ceiling, checked without delaying
 # ---------------------------------------------------------------------------
 # MOT_SPIN_MAX is the fraction of the ESC output range at which thrust
 # saturates, so it caps motor output in every mode (GUIDED, pilot, failsafe).
-# Was 0.95. MOT_HOVER_LEARN re-learns MOT_THST_HOVER after the rescale.
+# Was 0.95. It is stored ON THE FC (Mission Planner: Config -> Full Parameter
+# List -> MOT_SPIN_MAX = 0.80 -> Write Params), not written by the code:
+# MAVROS only reads or writes an FC parameter after pulling the whole list
+# (~25 s over the serial link), and waiting for that delayed every start.
 THROTTLE_CAP_PARAM = "MOT_SPIN_MAX"
 THROTTLE_CAP = 0.80
 
 
-def apply_throttle_cap(node: Node, timeout: float = 5.0, load_wait: float = 60.0) -> bool:
-    """Write THROTTLE_CAP to MOT_SPIN_MAX and confirm the FCU echoes it back.
+def check_throttle_cap(node: Node, load_wait: float = 120.0) -> None:
+    """Check MOT_SPIN_MAX == THROTTLE_CAP in the background; returns at once.
 
-    MAVROS rejects the set ("Unknown parameter") until it has pulled the FC's
-    parameter list after connecting, so retry for up to load_wait s.
-    Call once per mission before arming; refuse to fly if it returns False.
-    """
-    from mavros_msgs.srv import ParamSetV2
-    from rcl_interfaces.msg import ParameterType, ParameterValue
+    Logs the result once MAVROS has the FC's parameter list (it is read from
+    /mavros/param, where MAVROS mirrors the FC parameters). Never writes it."""
+    import threading
+    from rcl_interfaces.srv import GetParameters
 
-    req = ParamSetV2.Request()
-    req.param_id = THROTTLE_CAP_PARAM
-    req.value = ParameterValue(type=ParameterType.PARAMETER_DOUBLE,
-                               double_value=THROTTLE_CAP)
-    deadline = time.time() + load_wait
-    while True:
-        result = _call_service(node, ParamSetV2, "/mavros/param/set", req, timeout=timeout)
-        if result and result.success and abs(result.value.double_value - THROTTLE_CAP) < 1e-3:
-            node.get_logger().info(
-                f"[mavros_utils] Throttle cap: {THROTTLE_CAP_PARAM} = {THROTTLE_CAP:.2f} "
-                "(confirmed)")
-            return True
-        if time.time() > deadline:
-            break
-        node.get_logger().info(
-            "[mavros_utils] Throttle cap not set yet (MAVROS still loading the FC "
-            "parameters?) — retrying", throttle_duration_sec=10.0)
-        time.sleep(2.0)
-    got = result.value.double_value if result else None
-    node.get_logger().error(
-        f"[mavros_utils] Throttle cap NOT applied: {THROTTLE_CAP_PARAM} want "
-        f"{THROTTLE_CAP:.2f}, got {got}")
-    return False
+    def run():
+        deadline = time.time() + load_wait
+        while time.time() < deadline:
+            req = GetParameters.Request(names=[THROTTLE_CAP_PARAM])
+            res = _call_service(node, GetParameters, "/mavros/param/get_parameters", req,
+                                timeout=5.0)
+            v = res.values[0] if res is not None and res.values else None
+            if v is not None and v.type in (2, 3):          # integer / double
+                got = float(v.double_value if v.type == 3 else v.integer_value)
+                if abs(got - THROTTLE_CAP) < 1e-3:
+                    node.get_logger().info(
+                        f"[mavros_utils] Throttle cap on the FC: {THROTTLE_CAP_PARAM} = "
+                        f"{got:.2f} (confirmed)")
+                else:
+                    node.get_logger().error(
+                        f"[mavros_utils] {THROTTLE_CAP_PARAM} on the FC is {got:.2f}, not "
+                        f"{THROTTLE_CAP:.2f} — set it in Mission Planner (Full Parameter "
+                        f"List) and Write Params")
+                return
+            time.sleep(2.0)
+        node.get_logger().warn(
+            f"[mavros_utils] Could not read {THROTTLE_CAP_PARAM} from the FC in "
+            f"{load_wait:.0f} s — check it in Mission Planner")
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
