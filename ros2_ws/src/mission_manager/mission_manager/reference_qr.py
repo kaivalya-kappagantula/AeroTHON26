@@ -6,6 +6,9 @@
 # mission does. The caller is a MissionNode that has already taken off to
 # cruise_altitude_m over the launch point.
 #
+#   0. AHEAD: fly qr_initial_advance_m (1 m) forward along the heading the
+#      drone was placed with — the reference QR is placed that far in front
+#      of it — so the search starts over it.
 #   1. FIND: /perception/locate_qr reports where a QR is relative to the
 #      drone (detection only — works before the QR is readable, and for a QR
 #      that holds no text). None in view -> step forward qr_step_m along the
@@ -158,8 +161,13 @@ class ReferenceQr:
     # -------------------------------------------------------------------
 
     def run(self):
-        """Find, centre, read. Returns the QR's text ("" = read, no text in
-        it — matched by picture), or None if it was not found / not read."""
+        """Fly ahead over it, find, centre, read. Returns the QR's text ("" =
+        read, no text in it — matched by picture), or None if it was not
+        found / not read."""
+        ahead = float(self.cfg.qr_initial_advance_m)
+        if ahead > 0.0:
+            self._log().info(f"[reference_qr] Moving {ahead:.1f} m ahead over the reference QR")
+            self._step_forward(ahead)
         if not self._find_and_center():
             return None
         text = self._read()

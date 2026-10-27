@@ -58,6 +58,8 @@ mission_node:
     qr_scan_timeout_s: 60.0
     allow_qr_fallback: false            # SITL only: fly with qr_fallback_id
     qr_fallback_id: "QR_TARGET_DEMO_ID"
+    qr_initial_advance_m: 1.0           # NEW: first fly this far ahead (the QR
+                                        # is placed ~1 m in front of the drone)
     qr_step_m: 0.5                      # search step when no QR in view
     qr_max_steps: 4                     # search steps before giving up
     qr_center_tol_m: 0.3                # close enough = no move
@@ -68,7 +70,7 @@ mission_node:
     qr_move_tolerance_m: 0.7            # GPS noise ~1 m
     qr_locate_timeout_s: 8.0            # > qr_scanner_node locate_timeout_s
     # Gradual takeoff (as testing/waypoint_mission.py): position estimate
-    # steady on the ground, arm + 5 s armed wait, lift off, slow climb to
+    # steady on the ground, arm + 7 s armed wait, lift off, slow climb to
     # cruise_altitude_m holding the placed heading.
     takeoff_steady_time_s: 3.0
     takeoff_max_ground_drift_m: 0.8
@@ -252,12 +254,13 @@ sitl_corridor_sim:
     corridor2_waypoints_y: [-5.0, -5.0]
     corridor1_obstacles: [0.0]          # clean
     # Corridor 2 = the exit corridor (s from its arena-side mouth): three
-    # 3.5 ft wide x 6 ft tall obstacles (1.07 x 1.83 m) — near the left wall
-    # (pass right), near the right wall (pass left), near the middle. Real
-    # positions are random; their depth is unknown (obstacle_depth_m).
-    corridor2_obstacles: [1.2, 1.0, 1.0668, 1.8288,
-                          3.4, -0.9, 1.0668, 1.8288,
-                          5.4, 0.1, 1.0668, 1.8288]
+    # 3.5 ft wide x 6 ft tall obstacles (1.07 x 1.83 m) — in the middle, then
+    # near the left wall, then near the right wall. Real positions are
+    # random; their depth is unknown (obstacle_depth_m here, 1.0 m assumed by
+    # the planner).
+    corridor2_obstacles: [1.5, 0.0, 1.0668, 1.8288,
+                          3.6, 1.1, 1.0668, 1.8288,
+                          5.6, -1.1, 1.0668, 1.8288]
     corridor_width_m: 1.524
     wall_height_m: 4.0
     # Corridor 1 = the entry corridor, competition size (11.5 ft wide, 8 ft

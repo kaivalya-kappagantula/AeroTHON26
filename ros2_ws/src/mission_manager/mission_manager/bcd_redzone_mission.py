@@ -112,7 +112,7 @@ class BcdRedZoneMission(Node):
         self.detector_timeout = float(gp("detector_timeout_s", 0.5))
         self.blind_hold = float(gp("blind_hold_s", 10.0))
         self.max_stops = int(gp("max_stops", 30))
-        self.arm_hold = float(gp("arm_hold_s", 5.0))
+        self.arm_hold = float(gp("arm_hold_s", 7.0))
         self.arrival_tol = float(gp("arrival_tolerance_m", 0.3))
         self.altitude_tol = float(gp("altitude_tolerance_m", 0.5))
         self.altitude_timeout = float(gp("altitude_timeout_s", 40.0))

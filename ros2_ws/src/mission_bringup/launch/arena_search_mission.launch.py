@@ -12,10 +12,13 @@
 # red_zone_node and arena_search_mission. mission_params.yaml is read as-is;
 # the arguments below override it for this run only.
 #
-# Place the drone at a corner of the test area: the arena runs `length` m
-# ahead along its nose and `width` m to its right.
+# Place the drone in the middle of the test area's near edge (start:=centre,
+# default): the arena runs `length` m ahead along its nose and `width`/2 m to
+# each side. start:=corner: at its near-left corner, `width` m to the right.
 #
-#   length, width   test arena (m), ahead / to the right of the takeoff point
+#   length, width   test arena (m), ahead of / across the takeoff point
+#   start           centre (default) | corner — where the drone sits on the
+#                   near edge
 #   offset          the arena starts this far ahead of the takeoff point (m)
 #   scan_ref        true = PHASES 1 + 3: read the reference QR in the air
 #                   first (at alt: cruise_altitude_m := alt for this run;
@@ -35,7 +38,9 @@
 #   sim             true = SITL: no camera_ros; sim_down_camera_node renders
 #                   sim_qr_codes / sim_red_zones (x East, y North of the
 #                   takeoff point; SITL starts nose North, so the arena is
-#                   x 0..width, y 0..length); fcu_url defaults to SITL's
+#                   y offset..offset+length and x -width/2..width/2, or
+#                   x 0..width with start:=corner — the default sim_qr_codes
+#                   are laid out for start:=corner); fcu_url defaults to SITL's
 #   sim_reference_text  the QR text the SITL reference is made from ("" = a
 #                   QR holding no information; matched by picture)
 #   red_ignore      image areas red_zone_node never counts as red (the
@@ -106,11 +111,12 @@ def generate_launch_description():
         DeclareLaunchArgument("sim", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument(
             "fcu_url", default_value=PythonExpression(
-                ["'tcp://127.0.0.1:5760' if '", sim, "' == 'true' else '/dev/ttyAMA0:921600'"])),
+                ["'tcp://127.0.0.1:5760' if '", sim, "' == 'true' else '/dev/ttyAMA2:921600'"])),
         DeclareLaunchArgument("length", default_value="25.0"),
         DeclareLaunchArgument("width", default_value="25.0"),
         DeclareLaunchArgument("offset", default_value="0.0"),
         DeclareLaunchArgument("scan_ref", default_value="false", choices=["true", "false"]),
+        DeclareLaunchArgument("start", default_value="centre", choices=["centre", "corner"]),
         DeclareLaunchArgument("red_ignore", default_value=""),
         DeclareLaunchArgument("alt", default_value="10.0"),
         DeclareLaunchArgument("speed", default_value="0.5"),
@@ -191,6 +197,7 @@ def generate_launch_description():
                                                     value_type=bool),
             "arena_test_hover_s": _float("hover"),
             "arena_test_offset_m": _float("offset"),
+            "arena_test_start": LaunchConfiguration("start"),
             "arena_test_scan_reference": ParameterValue(LaunchConfiguration("scan_ref"),
                                                         value_type=bool),
             # phase 1 reads the reference at cruise_altitude_m: the sweep's

@@ -454,7 +454,7 @@ def main():
                    help="waypoint 'a,b,alt' (repeat). Default: 2 m square at 1 m")
     p.add_argument("--frame", choices=["body", "ned"], default="body")
     p.add_argument("--takeoff-alt", type=float, default=2.0)
-    p.add_argument("--spool-wait", type=float, default=5.0,
+    p.add_argument("--spool-wait", type=float, default=7.0,
                    help="seconds to let motors spin up after arming, before lift-off")
     p.add_argument("--liftoff-alt", type=float, default=0.5,
                    help="initial lift-off height (m) before the slow climb")

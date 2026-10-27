@@ -105,7 +105,7 @@ Hardware (Pi 5 ↔ Pixhawk on TELEM2):
 
 ```bash
 ros2 launch mission_bringup mission.launch.py launch_mavros:=true \
-    fcu_url:=/dev/ttyAMA0:921600 launch_camera:=true
+    fcu_url:=/dev/ttyAMA2:921600 launch_camera:=true
 ```
 
 The mission waits for the pilot's RC CH7 switch; switching it low at any time returns

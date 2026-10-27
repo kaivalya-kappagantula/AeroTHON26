@@ -3,7 +3,7 @@
 #
 # Sequence (no FSM, no perception):
 #   1. wait for FCU ready + GPS fix; the takeoff point becomes home / origin
-#   2. GUIDED + arm, then sit armed on the ground for arm_hold_s (5 s)
+#   2. GUIDED + arm, then sit armed on the ground for arm_hold_s (7 s)
 #   3. takeoff to `altitude` (2 m)
 #   4. BCD lawnmower over area_width_m x area_height_m (5 m x 5 m), using
 #      path_planner.waypoint_gen (strip spacing from the camera footprint,
@@ -71,7 +71,7 @@ class BcdSweepMission(Node):
         self.overlap = float(gp("overlap", 0.20))
         self.strip_width = float(gp("strip_width_m", 0.0))          # 0 = from camera
         self.edge_margin = float(gp("edge_margin_m", 0.0))
-        self.arm_hold = float(gp("arm_hold_s", 5.0))
+        self.arm_hold = float(gp("arm_hold_s", 7.0))
         self.arrival_tol = float(gp("arrival_tolerance_m", 0.3))
         self.altitude_tol = float(gp("altitude_tolerance_m", 0.5))
         self.altitude_timeout = float(gp("altitude_timeout_s", 40.0))

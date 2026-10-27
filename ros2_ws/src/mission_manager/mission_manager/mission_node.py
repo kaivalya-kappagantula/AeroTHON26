@@ -41,7 +41,7 @@ from path_planner.exit_corridor import search_points
 # Sit armed on the ground this long before every takeoff command (precaution).
 # Keep it under ArduPilot's DISARM_DELAY (default 10 s) or the FC disarms on
 # its own first.
-ARM_WAIT_S = 5.0
+ARM_WAIT_S = 7.0
 
 
 class MissionAbort(Exception):

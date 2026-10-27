@@ -53,7 +53,7 @@ test rigs differ from the competition, so nothing is assumed.
 | Part | Role |
 |---|---|
 | Raspberry Pi 5 (Ubuntu 24.04, ROS 2 Jazzy) | Runs all of this code |
-| Pixhawk 6C Mini (ArduCopter) | Flight controller; the Pi talks to it over TELEM2 (`/dev/ttyAMA0:921600`) through **MAVROS** |
+| Pixhawk 6C Mini (ArduCopter) | Flight controller; the Pi talks to it over TELEM2 (`/dev/ttyAMA2:921600`) through **MAVROS** |
 | OAK-D Lite (forward) | Depth (walls, obstacles) + colour (green banner) |
 | RPi Camera Module 3 (downward) | QR codes and the red mat |
 | Payload release | Servo on Pixhawk output 10 (`release_channel`), lock = SERVO10_TRIM, open = 1100 PWM |
@@ -130,7 +130,7 @@ with a one-line fix for the Pi's libcamera) and `tools/` (standalone scripts:
 `MissionNode._takeoff()` — the same gradual takeoff as `tools/waypoint_mission.py`:
 
 1. Check the position estimate holds still on the ground for 3 s (max drift 0.8 m).
-2. GUIDED, arm, then **sit armed for 5 s** (a deliberate safety pause — gives the pilot
+2. GUIDED, arm, then **sit armed for 7 s** (a deliberate safety pause — gives the pilot
    time to abort; don't remove it). Drift is still checked.
 3. Lift off to 0.5 m, then slide the altitude target up at 0.5 m/s to `cruise_altitude_m`
    (5 m), holding the heading the drone was placed with.

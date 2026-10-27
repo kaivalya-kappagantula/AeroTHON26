@@ -55,7 +55,7 @@ def generate_launch_description():
     avoidance_params = os.path.join(avoidance_share, "config", "avoidance.yaml")
 
     args = [
-        DeclareLaunchArgument("fcu_url", default_value="/dev/ttyAMA0:921600"),
+        DeclareLaunchArgument("fcu_url", default_value="/dev/ttyAMA2:921600"),
         DeclareLaunchArgument("takeoff_alt",
                               description="take-off height (m) before the banner search"),
         DeclareLaunchArgument("rc_switch", default_value="true", choices=["true", "false"]),

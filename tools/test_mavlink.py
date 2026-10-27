@@ -1,7 +1,7 @@
 from pymavlink import mavutil
 
 connection = mavutil.mavlink_connection(
-    "/dev/ttyAMA0",
+    "/dev/ttyAMA2",
     baud=921600,
     source_system=255,
     source_component=190

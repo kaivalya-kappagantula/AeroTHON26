@@ -66,6 +66,10 @@ class ArenaSearchMission(MissionNode):
         self.declare_parameter("arena_test_hover_s", 5.0)
         self.declare_parameter("arena_test_offset_m", 0.0)    # arena start, ahead
         self.declare_parameter("arena_test_scan_reference", False)
+        # "centre": the drone sits in the middle of the area's near edge
+        # (width/2 each side of its nose line); "corner": at its near-left
+        # corner (the area runs to the right)
+        self.declare_parameter("arena_test_start", "centre")
         self._last_xy = None            # (east, north, t) for the ground speed
         self.create_timer(STATUS_LOG_S, self._log_status)
 
@@ -98,20 +102,23 @@ class ArenaSearchMission(MissionNode):
         return self.get_parameter(name).value
 
     def _test_corners(self):
-        """The test arena's GPS corners: its near-left corner (offset ahead
-        of home), then ahead, ahead + right, right."""
+        """The test arena's GPS corners, near-left first (offset ahead of
+        home), then ahead, ahead + right, right. arena_test_start "centre":
+        home is level with the middle of the near edge; "corner": with its
+        left end."""
         lat0, lon0 = self.home
         h = math.radians(self.placed_heading_deg)
         fwd = (math.cos(h), math.sin(h))                 # (north, east)
         right = (-math.sin(h), math.cos(h))
         L, W = float(self._p("arena_test_length_m")), float(self._p("arena_test_width_m"))
         o = float(self._p("arena_test_offset_m"))
+        y0 = -W / 2.0 if str(self._p("arena_test_start")) == "centre" else 0.0
         k = M_PER_DEG_LAT * math.cos(math.radians(lat0))
 
         def at(a, b):
             n, e = a * fwd[0] + b * right[0], a * fwd[1] + b * right[1]
             return (lat0 + n / M_PER_DEG_LAT, lon0 + e / k)
-        return [at(o, 0), at(o + L, 0), at(o + L, W), at(o, W)]
+        return [at(o, y0), at(o + L, y0), at(o + L, y0 + W), at(o, y0 + W)]
 
     def _run_mission(self):
         try:

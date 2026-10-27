@@ -97,6 +97,7 @@ def load_mission_config(node) -> MissionConfig:
     cfg.qr_max_steps          = _declare(node, "qr_max_steps", 4)         # search steps before giving up
     cfg.qr_center_tol_m       = _declare(node, "qr_center_tol_m", 0.3)    # close enough = no move
     cfg.qr_center_passes      = _declare(node, "qr_center_passes", 2)     # locate -> move, repeated
+    cfg.qr_initial_advance_m  = _declare(node, "qr_initial_advance_m", 1.0)  # fly this far ahead first
     cfg.qr_max_radius_m       = _declare(node, "qr_max_radius_m", 4.0)    # never further from takeoff
     cfg.qr_max_jump_m         = _declare(node, "qr_max_jump_m", 3.0)      # longest single correction
     cfg.qr_move_speed_ms      = _declare(node, "qr_move_speed_ms", 0.5)

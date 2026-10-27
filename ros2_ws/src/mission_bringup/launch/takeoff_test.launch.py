@@ -45,7 +45,7 @@ def generate_launch_description():
         DeclareLaunchArgument("sim", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument(
             "fcu_url", default_value=PythonExpression(
-                ["'tcp://127.0.0.1:5760' if '", sim, "' == 'true' else '/dev/ttyAMA0:921600'"])),
+                ["'tcp://127.0.0.1:5760' if '", sim, "' == 'true' else '/dev/ttyAMA2:921600'"])),
         DeclareLaunchArgument("alt", default_value="5.0"),
         DeclareLaunchArgument("hover", default_value="10.0"),
         DeclareLaunchArgument("rc_switch", default_value="false", choices=["true", "false"]),

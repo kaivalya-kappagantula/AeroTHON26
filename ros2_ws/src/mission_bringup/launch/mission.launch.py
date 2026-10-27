@@ -1,7 +1,7 @@
 # mission.launch.py — Master launch file for Aerothon UAS Mission 2 (hardware)
 #
 #   ros2 launch mission_bringup mission.launch.py launch_mavros:=true \
-#       fcu_url:=/dev/ttyAMA0:921600 launch_camera:=true
+#       fcu_url:=/dev/ttyAMA2:921600 launch_camera:=true
 #
 # Starts: MAVROS (optional), path planner, payload, QR scanner, corridor
 # ground-marker detector (downward camera), the OAK-D Lite driver +
@@ -11,8 +11,9 @@
 # exit-corridor banner) on the OAK colour camera, the RPi
 # Camera 3 driver (optional), and finally the mission node.
 #
-# Pi 5 <-> Pixhawk 6C Mini on TELEM2 (GPIO14/15 UART0):
-#   /boot/firmware/config.txt: dtparam=uart0=on  (gives /dev/ttyAMA0 on Pi 5)
+# Pi 5 <-> Pixhawk 6C Mini on TELEM2 via the Pi's /dev/ttyAMA2 (the default
+# fcu_url of every drone launch; that UART must be enabled in
+# /boot/firmware/config.txt)
 #   FC: SERIAL2_PROTOCOL=2, SERIAL2_BAUD=921
 # USB instead: fcu_url:=/dev/ttyACM0:115200
 
