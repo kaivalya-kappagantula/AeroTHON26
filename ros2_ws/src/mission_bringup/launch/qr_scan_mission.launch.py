@@ -16,7 +16,9 @@
 #   rc_switch     true = wait for the RC start switch; false = start on launch
 #                 (then the flight-mode switch is the pilot's takeover)
 #   cam_yaw       Cam3 image-top direction vs the nose, deg clockwise (0 = aligned)
-#   af_mode       Cam3 autofocus: 2 = continuous (what was bench-validated)
+#   af_mode       Cam3 focus mode: 0 = manual (default). Autofocus cannot work on
+#                 this camera stack (libcamera: "PDAF data in unsupported
+#                 format"); the mission sets a fixed focus for alt (1/alt dioptres)
 #   fcu_url       MAVROS link
 #   sim           true = SITL: no camera_ros, sim_down_camera_node renders
 #                 sim_qr_codes; fcu_url defaults to SITL's
@@ -74,7 +76,7 @@ def generate_launch_description():
         DeclareLaunchArgument("scan_timeout", default_value="20.0"),
         DeclareLaunchArgument("attempts", default_value="2"),
         DeclareLaunchArgument("rc_switch", default_value="false", choices=["true", "false"]),
-        DeclareLaunchArgument("af_mode", default_value="2"),
+        DeclareLaunchArgument("af_mode", default_value="0"),
         DeclareLaunchArgument("sim_qr_codes", default_value='[[0,1,""]]'),
     ]
 
@@ -96,6 +98,9 @@ def generate_launch_description():
             "height": 720,
             "format": "BGR888",
             "AfMode": ParameterValue(LaunchConfiguration("af_mode"), value_type=int),
+            # fixed focus for alt from the start (the mission sets it again)
+            "LensPosition": ParameterValue(PythonExpression(
+                ["1.0 / max(float('", LaunchConfiguration("alt"), "'), 0.1)"]), value_type=float),
         }],
         remappings=[("/camera/image_raw", "/down_frame")],
     )

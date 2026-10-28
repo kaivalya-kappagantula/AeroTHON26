@@ -36,6 +36,7 @@ class QrScanMissionNode(MissionNode):
             self._wait_for_start()
             self.sm.auto_activate()
             self._preflight()
+            self._focus_camera(float(self.cfg.cruise_altitude_m))   # fixed focus for alt
             self._takeoff()
 
             self.sm.airborne()
