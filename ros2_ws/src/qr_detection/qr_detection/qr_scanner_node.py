@@ -347,6 +347,7 @@ class QRScannerNode(Node):
         self.get_logger().info("[qr_scanner] /perception/locate_qr called — activating LOCATE")
         self._locate_hits = []
         self._locate_result = None
+        self._locate_frame = None          # last frame seen while locating
         self._locate_done_event.clear()
         self._mode = self.MODE_LOCATE
         self._publish_status("LOCATE_ACTIVE")
@@ -362,7 +363,11 @@ class QRScannerNode(Node):
         else:
             response.success = False
             response.message = "no QR seen"
-            self.get_logger().warn("[qr_scanner] Locate timed out — no QR in view")
+            miss = self._save_miss_frame()
+            self.get_logger().warn(
+                "[qr_scanner] Locate timed out — no QR in view"
+                + (f" (camera frame saved: {miss})" if miss else
+                   " (NO camera frame received while locating)"))
         return response
 
     # ═════════════════════════════════════════════════════════════════════════
@@ -418,6 +423,8 @@ class QRScannerNode(Node):
         except Exception as e:
             self.get_logger().warn(f"[qr_scanner] CvBridge conversion failed: {e}")
             return
+        if self._mode == self.MODE_LOCATE:
+            self._locate_frame = frame
 
         # ── Pre-processing (same for all modes) ───────────────────────────────
         processed  = preprocess(frame)
@@ -707,6 +714,23 @@ class QRScannerNode(Node):
     # ═════════════════════════════════════════════════════════════════════════
     # Helpers
     # ═════════════════════════════════════════════════════════════════════════
+
+    def _save_miss_frame(self) -> str | None:
+        """A locate that saw no QR: save the last camera frame it had
+        (locate_miss_<time>.jpg) to see why — blur, framing, glare. Never
+        raises."""
+        frame = getattr(self, "_locate_frame", None)
+        if frame is None:
+            return None
+        try:
+            self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+            path = self._snapshot_dir / f"locate_miss_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
+            if not cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 92]):
+                return None
+            return str(path)
+        except Exception as e:                           # never break the mission
+            self.get_logger().warn(f"[qr_scanner] could not save the missed frame: {e}")
+            return None
 
     def _save_snapshot(self, frame: np.ndarray, det: dict, tag: str) -> Path | None:
         """

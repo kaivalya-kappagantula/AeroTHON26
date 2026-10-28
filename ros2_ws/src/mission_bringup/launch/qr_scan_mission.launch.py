@@ -19,6 +19,8 @@
 #   af_mode       Cam3 focus mode: 0 = manual (default). Autofocus cannot work on
 #                 this camera stack (libcamera: "PDAF data in unsupported
 #                 format"); the mission sets a fixed focus for alt (1/alt dioptres)
+#   live_view     true (default) = stream the Cam3 to http://<pi>:live_view_port/
+#                 (480 px, <= 5 fps to keep it light); false in flight frees CPU
 #   fcu_url       MAVROS link
 #   sim           true = SITL: no camera_ros, sim_down_camera_node renders
 #                 sim_qr_codes; fcu_url defaults to SITL's
@@ -77,6 +79,8 @@ def generate_launch_description():
         DeclareLaunchArgument("attempts", default_value="2"),
         DeclareLaunchArgument("rc_switch", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("af_mode", default_value="0"),
+        DeclareLaunchArgument("live_view", default_value="true", choices=["true", "false"]),
+        DeclareLaunchArgument("live_view_port", default_value="8080"),
         DeclareLaunchArgument("sim_qr_codes", default_value='[[0,1,""]]'),
     ]
 
@@ -156,12 +160,22 @@ def generate_launch_description():
                               "fastdds_large_frames.xml"]),
         condition=IfCondition(sim))
 
+    live_view = Node(
+        package="qr_detection",
+        executable="live_view_node",
+        name="live_view_node",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("live_view")),
+        parameters=[{"port": ParameterValue(LaunchConfiguration("live_view_port"), value_type=int),
+                     "width": 480, "max_fps": 5.0}],
+    )
+
     return LaunchDescription(args + [
         large_frames,
         mavros,
         # The sim camera takes its origin from the first GPS fix: vehicle on
         # the takeoff point, so start it once MAVROS is up.
-        TimerAction(period=3.0, actions=[camera, sim_camera, scanner]),
+        TimerAction(period=3.0, actions=[camera, sim_camera, scanner, live_view]),
         # Mission last, once MAVROS, the camera and the scanner are up.
         TimerAction(period=6.0, actions=[mission]),
     ])
