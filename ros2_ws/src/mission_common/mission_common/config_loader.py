@@ -93,16 +93,24 @@ def load_mission_config(node) -> MissionConfig:
     cfg.qr_fallback_id        = _declare(node, "qr_fallback_id", "QR_TARGET_DEMO_ID")
     # Reference QR in the air (mission_manager/reference_qr.py), at
     # cruise_altitude_m over the launch point; the QR is at most ~1 m ahead.
-    # none in view: hover at these along-nose offsets (m, + = forward) from
-    # where the search began, in order — never sideways
+    # It looks from over the launch point first; none in view: fly
+    # qr_initial_advance_m ahead, then hover at these along-nose offsets
+    # (m, + = forward) from there, in order — never sideways
     cfg.qr_search_offsets_m   = _declare(node, "qr_search_offsets_m", [0.3, -0.3, 0.6, -0.6])
     cfg.qr_center_tol_m       = _declare(node, "qr_center_tol_m", 0.3)    # close enough = no move
-    cfg.qr_center_passes      = _declare(node, "qr_center_passes", 2)     # locate -> move, repeated
-    cfg.qr_initial_advance_m  = _declare(node, "qr_initial_advance_m", 1.0)  # fly this far ahead first
+    cfg.qr_center_passes      = _declare(node, "qr_center_passes", 4)     # locate -> move, repeated
+    cfg.qr_initial_advance_m  = _declare(node, "qr_initial_advance_m", 1.0)  # the QR lies this far ahead
+    # Only QRs within this of that expected spot are used (GPS drift; not clutter)
+    cfg.qr_expected_radius_m  = _declare(node, "qr_expected_radius_m", 2.5)
     cfg.qr_max_radius_m       = _declare(node, "qr_max_radius_m", 4.0)    # never further from takeoff
     cfg.qr_max_jump_m         = _declare(node, "qr_max_jump_m", 3.0)      # longest single correction
     cfg.qr_move_speed_ms      = _declare(node, "qr_move_speed_ms", 0.5)
     cfg.qr_move_tolerance_m   = _declare(node, "qr_move_tolerance_m", 0.7)  # GPS noise ~1 m
+    # after each move, before the camera looks: speed below qr_settle_speed_ms
+    # for qr_settle_hold_s, waiting at most qr_settle_timeout_s
+    cfg.qr_settle_speed_ms    = _declare(node, "qr_settle_speed_ms", 0.1)
+    cfg.qr_settle_hold_s      = _declare(node, "qr_settle_hold_s", 1.0)
+    cfg.qr_settle_timeout_s   = _declare(node, "qr_settle_timeout_s", 8.0)
     cfg.qr_locate_timeout_s   = _declare(node, "qr_locate_timeout_s", 8.0)  # > scanner locate_timeout_s
 
     # ── Gradual takeoff (as testing/waypoint_mission.py) ─────────
@@ -121,7 +129,7 @@ def load_mission_config(node) -> MissionConfig:
     cfg.corridor_start_alt_m  = _declare(node, "corridor_start_alt_m", 3.0)
     # Straight up to this once past the entry corridor's walls (the later
     # phases set their own altitudes).
-    cfg.post_entry_alt_m      = _declare(node, "post_entry_alt_m", 10.0)
+    cfg.post_entry_alt_m      = _declare(node, "post_entry_alt_m", 9.0)
 
     # ── Arena search, phase 3 (mission_manager/arena_search.py) ──
     # The arena's 4 GPS corners in order around it (competition day). All
@@ -129,7 +137,7 @@ def load_mission_config(node) -> MissionConfig:
     # origin_lat/lon is used instead.
     cfg.arena_corners_lat     = _declare(node, "arena_corners_lat", [0.0, 0.0, 0.0, 0.0])
     cfg.arena_corners_lon     = _declare(node, "arena_corners_lon", [0.0, 0.0, 0.0, 0.0])
-    cfg.arena_alt_m           = _declare(node, "arena_alt_m", 10.0)
+    cfg.arena_alt_m           = _declare(node, "arena_alt_m", 9.0)
     cfg.arena_sweep_speed_ms  = _declare(node, "arena_sweep_speed_ms", 0.5)
     cfg.arena_red_margin_m    = _declare(node, "arena_red_margin_m", 2.0)   # from the red mat
     cfg.arena_edge_margin_m   = _declare(node, "arena_edge_margin_m", 1.0)  # strips inside the edge
@@ -137,21 +145,45 @@ def load_mission_config(node) -> MissionConfig:
     cfg.arena_match_passes    = _declare(node, "arena_match_passes", 2)     # fly over + rescan
     cfg.arena_match_tol_m     = _declare(node, "arena_match_tol_m", 1.0)    # match this close = over it
     cfg.arena_rescan_timeout_s = _declare(node, "arena_rescan_timeout_s", 15.0)
+    # Competition day: corners all zero -> the full mission refuses to take
+    # off (the placeholder rectangle at origin_lat/lon is for tests only).
+    cfg.require_arena_corners = _declare(node, "require_arena_corners", True)
+
+    # ── Mission clock (mission_node) ─────────────────────────────
+    # Runs from lift-off. The arena sweep ends early so that, after it,
+    # mission_drop_reserve_s (phase 4) + mission_exit_reserve_s (phase 5,
+    # home, landing) are still left of mission_time_limit_s.
+    cfg.mission_time_limit_s   = _declare(node, "mission_time_limit_s", 900.0)
+    cfg.mission_drop_reserve_s = _declare(node, "mission_drop_reserve_s", 90.0)
+    cfg.mission_exit_reserve_s = _declare(node, "mission_exit_reserve_s", 300.0)
 
     # ── Exit corridor, phase 5 (path_planner/exit_corridor.py) ───
     # Corridor 1's far end mirrored across the line through the takeoff
     # point = the exit corridor's arena-side entrance; the blue banner is
     # searched for from exit_search_standoff_m further out in the arena.
     # Not found -> the point shifted exit_search_shift_m each way along the
-    # corridor entrances (0 = no shifted searches); still not -> LAND.
+    # corridor entrances (0 = no shifted searches); still not -> the exit
+    # corridor failsafe (below).
     cfg.exit_search_standoff_m  = _declare(node, "exit_search_standoff_m", 6.0)
     cfg.exit_search_shift_m     = _declare(node, "exit_search_shift_m", 3.0)
     cfg.exit_corridor_timeout_s = _declare(node, "exit_corridor_timeout_s", 600.0)
+    # Exit corridor failsafe (ONLY the exit corridor): straight up to this,
+    # home, land. Must clear the corridor walls (8 ft = 2.44 m) with margin.
+    cfg.exit_failsafe_alt_m = _declare(node, "exit_failsafe_alt_m", 5.0)
+    if cfg.exit_failsafe_alt_m < 3.5:
+        raise ValueError("exit_failsafe_alt_m must clear the 2.44 m corridor walls "
+                         "with margin (>= 3.5 m)")
 
     # ── Payload drop ─────────────────────────────────────────────
     cfg.drop_arrival_tolerance_m = _declare(node, "drop_arrival_tolerance_m", 1.0)
     cfg.drop_arrival_timeout_s   = _declare(node, "drop_arrival_timeout_s", 30.0)
     cfg.drop_settle_s            = _declare(node, "drop_settle_s", 3.0)
+    # Camera centring at drop_altitude_m before the release
+    cfg.drop_center_tol_m        = _declare(node, "drop_center_tol_m", 0.3)
+    cfg.drop_center_passes       = _declare(node, "drop_center_passes", 3)
+    cfg.drop_center_max_offset_m = _declare(node, "drop_center_max_offset_m", 2.0)
+    # Wait for /payload/release (winch unwind + reel-in, held in place)
+    cfg.drop_release_timeout_s   = _declare(node, "drop_release_timeout_s", 60.0)
 
     # ── Obstacle sensor health (obstacle_avoidance coverage_guard) ─
     # sensor_live False -> hold; still False after sensor_fail_timeout_s -> LAND.
@@ -174,8 +206,11 @@ def load_mission_config(node) -> MissionConfig:
     cfg.red_zone_buffer_m           = _declare(node, "red_zone_buffer_m", 0.5)
 
     # ── Payload Specific ─────────────────────────────────────────
+    # Winch (spool): spinning = payload held, stopped = it unwinds and drops
     cfg.release_channel     = _declare(node, "release_channel", 10)
-    cfg.release_pwm_open    = _declare(node, "release_pwm_open", 1100)
-    cfg.release_pause_s     = _declare(node, "release_pause_s", 1.0)
+    cfg.winch_pwm_spin      = _declare(node, "winch_pwm_spin", 2000)
+    cfg.winch_pwm_stop      = _declare(node, "winch_pwm_stop", 1500)
+    cfg.winch_unwind_s      = _declare(node, "winch_unwind_s", 8.0)
+    cfg.winch_reel_wait_s   = _declare(node, "winch_reel_wait_s", 5.0)
 
     return cfg

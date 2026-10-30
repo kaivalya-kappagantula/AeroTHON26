@@ -16,6 +16,8 @@
 #   rc_switch     true = wait for the RC start switch; false = start on launch
 #                 (then the flight-mode switch is the pilot's takeover)
 #   cam_yaw       Cam3 image-top direction vs the nose, deg clockwise (0 = aligned)
+#   cam_mirror    true (default, as the Cam3 is mounted) = its image is mirrored
+#                 left-right vs the real scene; the nodes flip it back
 #   af_mode       Cam3 focus mode: 0 = manual (default). Autofocus cannot work on
 #                 this camera stack (libcamera: "PDAF data in unsupported
 #                 format"); the mission sets a fixed focus for alt (1/alt dioptres)
@@ -27,6 +29,9 @@
 #   sim_qr_codes  JSON [[east, north, text], ...] metres from the takeoff
 #                 point. Default: a QR holding NO text 1 m North (SITL's
 #                 default nose direction) — the hard case.
+#   heading_error SITL: deg the FC's heading reads clockwise of the true nose,
+#                 when the SITL compass is made wrong on purpose; the sim
+#                 camera renders the true view (default 0)
 #
 # Needs both workspaces sourced (camera_ws for camera_ros, ros2_ws for the rest).
 # Place the vehicle with the QR at most ~1 m ahead, nose pointing at it.
@@ -75,6 +80,7 @@ def generate_launch_description():
         DeclareLaunchArgument("alt", default_value="5.0"),
         DeclareLaunchArgument("max_radius", default_value="4.0"),
         DeclareLaunchArgument("cam_yaw", default_value="0.0"),
+        DeclareLaunchArgument("cam_mirror", default_value="true", choices=["true", "false"]),
         DeclareLaunchArgument("scan_timeout", default_value="20.0"),
         DeclareLaunchArgument("attempts", default_value="2"),
         DeclareLaunchArgument("rc_switch", default_value="false", choices=["true", "false"]),
@@ -82,6 +88,7 @@ def generate_launch_description():
         DeclareLaunchArgument("live_view", default_value="true", choices=["true", "false"]),
         DeclareLaunchArgument("live_view_port", default_value="8080"),
         DeclareLaunchArgument("sim_qr_codes", default_value='[[0,1,""]]'),
+        DeclareLaunchArgument("heading_error", default_value="0.0"),
     ]
 
     mavros = IncludeLaunchDescription(
@@ -117,6 +124,8 @@ def generate_launch_description():
         condition=IfCondition(sim),
         parameters=[{
             "mount_yaw_deg": _float("cam_yaw"),
+            "mirror": ParameterValue(LaunchConfiguration("cam_mirror"), value_type=bool),
+            "heading_error_deg": _float("heading_error"),
             "qr_codes": ParameterValue(LaunchConfiguration("sim_qr_codes"), value_type=str),
         }],
     )
@@ -129,6 +138,7 @@ def generate_launch_description():
         parameters=[{
             "scan_timeout_s": _float("scan_timeout"),
             "cam_yaw_offset_deg": _float("cam_yaw"),
+            "cam_mirror": ParameterValue(LaunchConfiguration("cam_mirror"), value_type=bool),
             "delivery_altitude": _float("alt"),
         }],
     )

@@ -64,7 +64,7 @@ def generate_launch_description():
         DeclareLaunchArgument("takeoff_alt",
                               description="take-off height (m) before the banner search"),
         DeclareLaunchArgument("rc_switch", default_value="true", choices=["true", "false"]),
-        DeclareLaunchArgument("drone_width", default_value="0.61"),
+        DeclareLaunchArgument("drone_width", default_value="0.6294"),
     ]
 
     mavros = IncludeLaunchDescription(

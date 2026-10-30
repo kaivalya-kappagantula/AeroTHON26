@@ -25,9 +25,21 @@
 # Corridor WIDTH is not configured (corridors differ): walls are paired when
 # they are corridor_width_min_m..max_m apart, and every two-wall fit is a
 # width measurement. The median of the last corridor_width_window of them
-# places the unseen wall when only one is in view; until a pair has been seen
-# a single wall gives no fit. With no wall fit at all for
-# corridor_width_forget_s the width is forgotten (the next corridor may differ).
+# places the unseen wall when only one is in view, and from then on only
+# pairs within corridor_width_tol_m of it are walls (squeezed between a wall
+# and an obstacle, the obstacle's side would pass as the other wall); until a pair has been seen
+# a single wall gives no fit — unless corridor_width_prior_m is set (the
+# competition corridors are 11.5 ft): then one wall gives a fit from the
+# first frame, and pairs must be within corridor_width_tol_m of the prior
+# until measured. In an 11.5 ft corridor both walls are rarely in view at
+# once (OAK-D bench: 81 of ~2000 frames), so without the prior most frames
+# were "no corridor". With no wall fit at all for corridor_width_forget_s
+# the measured width is forgotten (back to the prior, or unknown).
+#
+# Frames with no wall fit still report the nearest obstacle (in a band around
+# the nose, rotated by the last fitted corridor direction:
+# corridor_geometry.find_obstacle_unfitted) — the planner flies on GPS then,
+# and an obstacle filling the view hides the walls exactly when it matters.
 #
 # Wall sources (corridor_walls_from): depth (stereo, needs texture: on white
 # walls only the sponsor logos give depth), rgb (wall bases against the
@@ -71,8 +83,13 @@ class CorridorPerceptionNode(Node):
         self.declare_parameter('pitch_compensation', True)
         self.declare_parameter('corridor_width_min_m', d.width_min_m)
         self.declare_parameter('corridor_width_max_m', d.width_max_m)
+        self.declare_parameter('corridor_width_tol_m', d.width_tol_m)
+        self.declare_parameter('corridor_path_half_width_m', d.path_half_width_m)
         self.declare_parameter('corridor_width_window', 15)
         self.declare_parameter('corridor_width_forget_s', 5.0)
+        self.declare_parameter('corridor_width_prior_m', 0.0)        # 0 = none
+        self.declare_parameter('corridor_max_single_offset_m', d.max_single_offset_m)
+        self.declare_parameter('corridor_unfitted_margin_m', d.unfitted_margin_m)
         self.declare_parameter('corridor_slice_lo_m', d.slice_lo_m)
         self.declare_parameter('corridor_slice_hi_m', d.slice_hi_m)
         self.declare_parameter('corridor_max_range_m', d.max_range_m)
@@ -84,11 +101,17 @@ class CorridorPerceptionNode(Node):
         self.params = cg.CorridorParams(
             width_min_m=float(gp('corridor_width_min_m')),
             width_max_m=float(gp('corridor_width_max_m')),
+            width_tol_m=float(gp('corridor_width_tol_m')),
+            path_half_width_m=float(gp('corridor_path_half_width_m')),
             slice_lo_m=float(gp('corridor_slice_lo_m')),
             slice_hi_m=float(gp('corridor_slice_hi_m')),
             max_range_m=float(gp('corridor_max_range_m')),
             obstacle_range_m=float(gp('corridor_obstacle_range_m')),
+            max_single_offset_m=float(gp('corridor_max_single_offset_m')),
+            unfitted_margin_m=float(gp('corridor_unfitted_margin_m')),
         )
+        prior = float(gp('corridor_width_prior_m'))
+        self.width_prior = prior if prior > 0.0 else None
         self.stride = int(gp('corridor_stride_px'))
         self.pitch_offset = math.radians(float(gp('camera_pitch_offset_deg')))
         self.pitch_compensation = bool(gp('pitch_compensation'))
@@ -100,6 +123,7 @@ class CorridorPerceptionNode(Node):
         self.width_forget_s = float(gp('corridor_width_forget_s'))
         self._widths = collections.deque(maxlen=int(gp('corridor_width_window')))
         self._last_walls_s = None   # last frame with any wall fit
+        self._axis = None           # (world axis ENU rad, s) of the last wall fit
 
         self._K = None              # (fx, fy, cx, cy, width)
         self._fov = None
@@ -144,6 +168,7 @@ class CorridorPerceptionNode(Node):
         self.get_logger().info(
             f'corridor_perception_node up: width measured '
             f'({self.params.width_min_m:.2f}..{self.params.width_max_m:.2f} m accepted), '
+            f'prior {self.width_prior or 0.0:.2f} m (0 = none), '
             f'walls from {self.walls_from}, '
             f'slice {self.params.slice_lo_m:+.2f}..{self.params.slice_hi_m:+.2f} m, '
             f'range {self.params.max_range_m:.1f} m -> {TOPIC}')
@@ -190,10 +215,11 @@ class CorridorPerceptionNode(Node):
         return self._fb, self._fov_rgb
 
     def _width(self, now):
-        """Measured corridor width (median of recent wall pairs), or None."""
+        """Measured corridor width (median of recent wall pairs), else the
+        prior (None if neither)."""
         if self._last_walls_s is None or now - self._last_walls_s > self.width_forget_s:
             self._widths.clear()
-        return statistics.median(self._widths) if self._widths else None
+        return statistics.median(self._widths) if self._widths else self.width_prior
 
     def _on_imu(self, msg):
         q = msg.orientation
@@ -258,7 +284,20 @@ class CorridorPerceptionNode(Node):
             self._last_walls_s = now
             if r['walls'] == 2:
                 self._widths.append(r['wall_left'] - r['wall_right'])
+            if not math.isnan(yaw):
+                self._axis = (yaw + r['heading_err'], now)
+        else:
+            # No wall fit: obstacles in a band around the nose, turned by the
+            # last fitted corridor direction (nose = corridor if none / old).
+            heading = 0.0
+            if self._axis is not None and now - self._axis[1] < 10.0 and not math.isnan(yaw):
+                a = self._axis[0] - yaw
+                heading = math.atan2(math.sin(a), math.cos(a))
+                if abs(heading) > math.radians(20.0):
+                    heading = 0.0
+            cg.find_obstacle_unfitted(r, x, y, h, self.params, width, heading, fov, hag)
         r['slice_lo'] = self.params.slice_lo_m
+        r['path_dist'] = cg.path_distance(x, y, h, self.params, hag)
         r['cam_alt'] = alt
         r['cam_yaw'] = yaw
         self.pub.publish(corridor_msg.encode(r))

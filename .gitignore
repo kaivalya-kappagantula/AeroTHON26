@@ -26,6 +26,9 @@ depthai-ros/
 vision_opencv/
 AeroTHON-main/
 
+# Gazebo simulations (local only: world generator, models, launch)
+gazebo_sims/
+
 # Editor
 .vscode/
 .idea/

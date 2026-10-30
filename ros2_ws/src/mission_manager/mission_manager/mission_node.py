@@ -8,7 +8,7 @@
 #   - The mission runs linearly in a worker thread (_run_mission). It calls
 #     services and sleep-polls their futures while the main thread spins.
 #   - Abort conditions (RC switch low, FC left GUIDED, battery critical,
-#     obstacle sensor dead)
+#     obstacle sensor / red camera dead -> RTL)
 #     are checked continuously by _tick() inside every wait, so the mission can
 #     be stopped mid-leg, not only between phases.
 #   - Failsafes (battery, fence, GCS/radio loss, EKF) are ArduPilot's job. When
@@ -26,7 +26,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from std_msgs.msg import Bool, Float64, String
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped
 from mavros_msgs.msg import State as MavrosState, RCIn
 from sensor_msgs.msg import BatteryState, NavSatFix, NavSatStatus
 
@@ -34,6 +34,7 @@ from mission_common import mavros_utils as mav
 from mission_common import srv_helpers as srv
 from mission_common.config_loader import load_mission_config
 from mission_manager.arena_search import ArenaSearch
+from mission_manager.payload_drop import PayloadDrop
 from mission_manager.reference_qr import ReferenceQr
 from mission_manager.state_machine import MissionSM
 from path_planner.exit_corridor import search_points
@@ -42,6 +43,8 @@ from path_planner.exit_corridor import search_points
 # Keep it under ArduPilot's DISARM_DELAY (default 10 s) or the FC disarms on
 # its own first.
 ARM_WAIT_S = 7.0
+# RTL failsafe: the FC must report RTL within this, else we command LAND.
+RTL_CONFIRM_S = 3.0
 
 
 class MissionAbort(Exception):
@@ -53,6 +56,9 @@ class MissionAbort(Exception):
                   not taken over (still GUIDED) we command LAND ourselves.
       'fc'      — the FC left GUIDED in flight (its own failsafe or a pilot
                   mode change): stop commanding so we never fight it.
+      'sensor'  — a sensor stayed dead after the hold-and-retry (obstacle
+                  sensor, red-zone camera, corridor SENSOR_TIMEOUT): RTL;
+                  RTL refused / not engaged -> LAND.
       'failure' — companion-detected failure (sensor dead, leg failed, ...):
                   LAND if airborne, disarm/stay down if on the ground.
     """
@@ -83,6 +89,9 @@ class MissionNode(Node):
         # Target ID for the qr_scanner_node Phase-5 matcher (latched so a late
         # subscriber still gets it).
         self.delivery_id_pub = self.create_publisher(String, "/qr_scanner/delivery_id", latched)
+        # Where the reference QR should be ("lat,lon,radius_m"; "" = anywhere):
+        # qr_scanner_node's locate uses only a QR near it (reference_qr.py).
+        self.locate_hint_pub = self.create_publisher(String, "/qr_scanner/locate_hint", latched)
 
         # MAVROS publishes BEST_EFFORT; a RELIABLE subscriber gets nothing.
         mavros_qos = QoSProfile(
@@ -101,14 +110,18 @@ class MissionNode(Node):
         self.heading_deg = None         # compass, deg clockwise from North
         self.placed_heading_deg = None  # heading as placed on the ground (held in the climb)
         self.local_xy = None            # (east, north) of the EKF local position, m
+        self.ground_speed = None        # horizontal EKF speed, m/s
         self.c1_exit = None             # (lat, lon, axis ENU rad): where phase 2 left
                                         # corridor 1's walls — phase 5 mirrors it
+        self.mission_t0 = None          # time.time() at lift-off: the mission clock
         self._rc_auto_active = False
         self._sensor_live = False       # coverage_guard defaults are fail-safe False
         self._coverage_ok = False
         self._sensor_bad_since = None
+        self._sensor_check = True       # False: the obstacle sensor is not needed / not ours
+                                        # to time out (exit corridor leg, exit failsafe)
 
-        self._abort = None              # (kind, reason) once requested
+        self._abort = None             # (kind, reason) once requested
         self._airborne = False
         self._landing = False           # we commanded LAND: mode change expected
         self._mission_complete = False
@@ -122,6 +135,8 @@ class MissionNode(Node):
                                  self._heading_cb, mavros_qos)
         self.create_subscription(PoseStamped, "/mavros/local_position/pose",
                                  self._local_pose_cb, mavros_qos)
+        self.create_subscription(TwistStamped, "/mavros/local_position/velocity_local",
+                                 self._local_vel_cb, mavros_qos)
         # coverage_guard publishes these RELIABLE at 10 Hz.
         self.create_subscription(Bool, "/avoidance/sensor_live", self._sensor_live_cb, 10)
         self.create_subscription(Bool, "/avoidance/coverage_ok", self._coverage_ok_cb, 10)
@@ -154,6 +169,9 @@ class MissionNode(Node):
 
     def _local_pose_cb(self, msg: PoseStamped):
         self.local_xy = (msg.pose.position.x, msg.pose.position.y)
+
+    def _local_vel_cb(self, msg: TwistStamped):
+        self.ground_speed = math.hypot(msg.twist.linear.x, msg.twist.linear.y)
 
     def _battery_cb(self, msg: BatteryState):
         self.battery_voltage = msg.voltage
@@ -194,7 +212,7 @@ class MissionNode(Node):
             raise MissionAbort("failure", "ROS shutting down")
         if self._abort is not None:
             raise MissionAbort(*self._abort)
-        if self._airborne and self.cfg.require_avoidance_sensor:
+        if self._airborne and self._sensor_required():
             if self._sensor_live:
                 self._sensor_bad_since = None
             else:
@@ -204,8 +222,43 @@ class MissionNode(Node):
                     self.get_logger().warn("[mission_node] Obstacle sensor NOT live")
                 elif now - self._sensor_bad_since > self.cfg.sensor_fail_timeout_s:
                     raise MissionAbort(
-                        "failure",
+                        "sensor",
                         f"obstacle sensor dead > {self.cfg.sensor_fail_timeout_s:.0f}s")
+
+    def _mission_left_s(self):
+        """Seconds left of mission_time_limit_s since lift-off (None before)."""
+        if self.mission_t0 is None:
+            return None
+        return float(self.cfg.mission_time_limit_s) - (time.time() - self.mission_t0)
+
+    def _log_clock(self, what: str):
+        left = self._mission_left_s()
+        if left is None:
+            return
+        limit = float(self.cfg.mission_time_limit_s)
+        text = (f"[mission_node] CLOCK {what}: {(limit - left) / 60.0:.1f} min since lift-off, "
+                f"{left:+.0f} s left of {limit / 60.0:.0f} min")
+        (self.get_logger().warn if left < 0 else self.get_logger().info)(text)
+
+    def _arena_deadline(self):
+        """time.time() by which the arena sweep must end so that the drop and
+        the exit corridor + home still fit in the mission time (None: clock
+        not running)."""
+        left = self._mission_left_s()
+        if left is None:
+            return None
+        budget = left - float(self.cfg.mission_drop_reserve_s) \
+            - float(self.cfg.mission_exit_reserve_s)
+        if budget <= 0.0:
+            self.get_logger().error(
+                f"[mission_node] CLOCK: no time left for the arena search ({left:.0f} s left, "
+                "drop + exit reserves need more) — skipping it")
+        else:
+            self.get_logger().info(f"[mission_node] CLOCK: arena search gets {budget:.0f} s")
+        return time.time() + budget
+
+    def _sensor_required(self) -> bool:
+        return self._sensor_check and bool(self.cfg.require_avoidance_sensor)
 
     def _sleep(self, secs: float):
         end = time.time() + secs
@@ -262,7 +315,7 @@ class MissionNode(Node):
         deadline = time.time() + timeout
         while time.time() < deadline:
             self._tick()
-            if self.cfg.require_avoidance_sensor and not self._sensor_live:
+            if self._sensor_required() and not self._sensor_live:
                 if not holding and self.gps is not None:
                     self.get_logger().warn("[mission_node] Sensor not live — holding position")
                     mav.goto(self, self.gps[0], self.gps[1], alt, publish_count=5,
@@ -407,6 +460,8 @@ class MissionNode(Node):
         self.get_logger().info(f"[mission_node] Lift-off to {first:.1f} m")
         if not mav.takeoff(self, first):
             raise MissionAbort("failure", "takeoff command rejected")
+        if self.mission_t0 is None:
+            self.mission_t0 = time.time()
         self._airborne = True
         if not self._wait_for(lambda: self.rel_alt is not None and self.rel_alt >= 0.8 * first,
                               self.cfg.altitude_timeout_s, f"lift-off to {first} m"):
@@ -447,7 +502,8 @@ class MissionNode(Node):
         if res is None:
             raise MissionAbort("failure", f"{label}: no response from path_planner")
         if not res.success:
-            raise MissionAbort("failure", f"{label} failed: {res.message}")
+            kind = "sensor" if res.message.startswith("SENSOR_TIMEOUT") else "failure"
+            raise MissionAbort(kind, f"{label} failed: {res.message}")
 
     def _entry_corridor_phase(self):
         """Phase 2, shared by the mission and its test flight
@@ -459,8 +515,16 @@ class MissionNode(Node):
         end — and straight up to post_entry_alt_m."""
         self._return_over_home()
         self._climb_in_place(self.cfg.corridor_start_alt_m, self.placed_yaw_enu())
-        self._fly_leg(srv.SRV_ENTRY_CORRIDOR, self.cfg.entry_corridor_timeout_s,
-                      "entry corridor")
+        # In the leg path_planner owns the obstacle sensor timeout (as in the
+        # exit corridor): its SENSOR_TIMEOUT first backs out from under the
+        # banner, so the RTL climb that follows cannot hit it.
+        self._sensor_check = False
+        try:
+            self._fly_leg(srv.SRV_ENTRY_CORRIDOR, self.cfg.entry_corridor_timeout_s,
+                          "entry corridor")
+        finally:
+            self._sensor_check = True
+            self._sensor_bad_since = None
         # The planner ends just past the walls, nose down the corridor:
         # corridor 1's far end and direction, for phase 5.
         if self.gps is not None and self.heading_deg is not None:
@@ -476,10 +540,78 @@ class MissionNode(Node):
         arena_alt_m around the red zones, face back down the corridors, down
         to corridor_start_alt_m, then /path_planner/exit_corridor — +-90 deg
         blue banner search, line-up, through with obstacles passed beside.
-        Banner not found -> the next search point; none left -> MissionAbort
-        (LAND in place). Ends just past the exit corridor's walls."""
+        Banner not found -> the next search point.
+
+        True: through, just past the exit corridor's walls. False: it failed
+        and the EXIT CORRIDOR FAILSAFE has run (_exit_failsafe: straight up
+        above the walls, home, landed). Only this phase has that failsafe:
+        any failure in it — a planner reply, a companion "failure" abort
+        (e.g. red camera silent on the way there) or a crash — runs it;
+        battery / pilot / FC aborts still raise MissionAbort as everywhere."""
+        try:
+            reason = self._fly_exit_corridor()
+        except MissionAbort as a:
+            if a.kind != "failure":
+                raise
+            reason = a.reason
+        except Exception as e:
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+            reason = f"crash: {e}"
+        if reason is None:
+            return True
+        self._exit_failsafe(reason)
+        return False
+
+    def _exit_failsafe(self, reason: str):
+        """Exit corridor failed: climb straight up where the vehicle is to
+        exit_failsafe_alt_m (above the corridor walls; path_planner has
+        already backed out from under the banner if it failed at the mouth),
+        then fly home and land — fully autonomous. If the altitude is not
+        confirmed the vehicle lands in place instead: flying home lower could
+        cross a wall.
+
+        Home: once the arena has been flown (phases 3-5 plan in its frame),
+        around the red zones at arena_alt_m with the red camera watching
+        (ArenaSearch.go_to) — the red mat must never be flown over, at any
+        height, and a straight line home from the arena side can cross it.
+        No route / red camera dead -> MissionAbort: lands where it is (never
+        over red). Arena never flown: straight home at exit_failsafe_alt_m.
+
+        The obstacle sensor is not needed above the walls: its timeout is
+        off from here on (a dead OAK-D may be why the corridor failed)."""
+        alt = float(self.cfg.exit_failsafe_alt_m)
+        self.get_logger().error(
+            f"[mission_node] EXIT CORRIDOR FAILSAFE — {reason}: climbing straight up to "
+            f"{alt:.1f} m (above the corridor walls), then return to launch and land")
+        self._sensor_check = False
+        self._stop_planner()
+        for _ in range(2):
+            self._climb_in_place(alt)
+            if self.rel_alt is not None and self.rel_alt >= alt - self.cfg.altitude_tolerance_m:
+                break
+        else:
+            raise MissionAbort("failure", f"exit corridor failsafe: {alt:.1f} m not reached "
+                                          "— landing in place rather than fly home low")
+        self.sm.c2_complete()
+        if self.arena.frame is not None:
+            if not self.arena.go_to(*self.home, "home (exit corridor failsafe)"):
+                raise MissionAbort("failure", "exit corridor failsafe: no route home clear "
+                                              "of the red zones — landing here")
+        elif not self._goto_and_wait(*self.home, alt, self.cfg.arrival_tolerance_m,
+                                     self.cfg.arrival_timeout_s, self.cfg.transit_speed_ms):
+            self.get_logger().warn("[mission_node] Home not reached in time — landing here")
+        self.sm.home_reached()
+        self._land_and_wait()
+        self.sm.touchdown()
+        self.get_logger().warn(
+            "[mission_node] Mission ended by the exit corridor failsafe — landed at home")
+
+    def _fly_exit_corridor(self):
+        """The exit corridor itself (see _exit_corridor_phase). None if
+        through, else why it failed."""
         if self.c1_exit is None or self.home is None:
-            raise MissionAbort("failure", "exit corridor: corridor 1's exit was not recorded")
+            return "corridor 1's exit was not recorded"
         lat1, lon1, axis = self.c1_exit
         d_n, d_e = mav.ne_offset(self.home[0], self.home[1], lat1, lon1)
         pts = search_points((d_e, d_n), axis, float(self.cfg.exit_search_standoff_m),
@@ -493,16 +625,25 @@ class MissionNode(Node):
             if not self.arena.go_to(lat, lon, label):
                 continue
             self._climb_in_place(self.cfg.corridor_start_alt_m, facing)
-            res = self._call_leg(srv.SRV_EXIT_CORRIDOR, self.cfg.exit_corridor_timeout_s)
+            # In the leg path_planner owns the obstacle sensor timeout
+            # (SENSOR_TIMEOUT, same sensor_fail_timeout_s): failing the leg
+            # itself, it first backs out from under the banner — cancelled by
+            # our own timeout it would not, and the failsafe's climb could
+            # hit the banner.
+            self._sensor_check = False
+            try:
+                res = self._call_leg(srv.SRV_EXIT_CORRIDOR, self.cfg.exit_corridor_timeout_s)
+            finally:
+                self._sensor_check = True
+                self._sensor_bad_since = None
             if res is None:
-                raise MissionAbort("failure", "exit corridor: no response from path_planner")
+                return "no response from path_planner"
             if res.success:
-                return
+                return None
             if not res.message.startswith("NO_BANNER"):
-                raise MissionAbort("failure", f"exit corridor failed: {res.message}")
+                return res.message
             self.get_logger().warn(f"[mission_node] {label}: {res.message}")
-        raise MissionAbort("failure", "exit corridor: blue banner not found at any search "
-                                      "point — landing here")
+        return "blue banner not found at any search point"
 
     def _return_over_home(self):
         """Fly level back over the takeoff point (the reference QR search and
@@ -578,18 +719,12 @@ class MissionNode(Node):
             self.get_logger().warn(f"[mission_node] {alt} m not reached — continuing")
 
     def _drop_payload(self, qr_lat, qr_lon):
-        alt = self.cfg.drop_altitude_m
-        if not self._goto_and_wait(qr_lat, qr_lon, alt, self.cfg.drop_arrival_tolerance_m,
-                                   self.cfg.drop_arrival_timeout_s, self.cfg.arena_speed_ms,
-                                   face_target=False):
-            self.get_logger().warn("[mission_node] Not settled over the QR — dropping anyway")
-        self.sm.drop_position_reached()
-        self._sleep(self.cfg.drop_settle_s)
-        res = srv.call_trigger(self, srv.SRV_PAYLOAD_RELEASE,
-                               call_timeout=self.cfg.service_timeout_s)
-        self.sm.drop_confirmed = bool(res is not None and res.success)
-        if not self.sm.drop_confirmed:
-            self.get_logger().error("[mission_node] Payload release NOT confirmed")
+        """Phase 4 (mission_manager/payload_drop.py): over the QR around the
+        red zones, straight down, camera-centred, release, back up."""
+        return PayloadDrop(self).run(
+            qr_lat, qr_lon,
+            approach=lambda lat, lon: self.arena.go_to(lat, lon, "over the drop QR"),
+            clear=self.arena.clear_of_red)
 
     def _land_and_wait(self):
         self._landing = True
@@ -604,13 +739,22 @@ class MissionNode(Node):
         try:
             self._wait_for_start()
 
+            # Competition day: the arena's corners must be set (all zero =
+            # a placeholder rectangle somewhere else entirely).
+            if self.cfg.require_arena_corners and not (
+                    any(self.cfg.arena_corners_lat) and any(self.cfg.arena_corners_lon)):
+                raise MissionAbort("failure", "arena_corners_lat/lon not set in "
+                                              "mission_params.yaml — not taking off")
+
             # Phase 1: gradual takeoff, then the reference QR read in the air
             # over the launch point and stored.
             self.sm.auto_activate()
             self._preflight()
+            self._focus_camera(float(self.cfg.cruise_altitude_m))   # reference QR height
             self._takeoff()
 
             self.sm.airborne()
+            self._log_clock("phase 1, reference QR")
             self.sm.mission_target_qr = self._reference_qr()
             if self.sm.mission_target_qr is None:
                 self.get_logger().warn(
@@ -622,15 +766,21 @@ class MissionNode(Node):
 
             # Phase 2: the entry corridor.
             self.sm.qr_scanned()
+            self._log_clock("phase 2, entry corridor")
             self._entry_corridor_phase()
 
             self.sm.entry_complete()
-            # Phase 3: the arena search (no reference QR -> nothing to match)
+            # Phase 3: the arena search (no reference QR -> nothing to match),
+            # ended early by the mission clock so phases 4-5 still fit.
             target = None
             if self.sm.mission_target_qr is not None:
-                target = self.arena.run()
+                self._log_clock("phase 3, arena search")
+                until = self._arena_deadline()
+                if until is None or until > time.time():
+                    target = self.arena.run(until=until)
             if target is not None:
                 self.sm.qr_matched()
+                self._log_clock("phase 4, payload drop")
                 self._drop_payload(*target)
                 self.sm.drop_complete()
             else:
@@ -638,11 +788,15 @@ class MissionNode(Node):
                     "[mission_node] Target QR not found — keeping payload, continuing")
                 self.sm.search_exhausted()
 
-            # Phase 5: the exit corridor. Phase 6 (home, land) below is
-            # the old code, not reworked yet.
-            self._exit_corridor_phase()
+            # Phase 5: the exit corridor. Failed -> its failsafe has already
+            # climbed above the walls, flown home and landed.
+            self._log_clock("phase 5, exit corridor")
+            if not self._exit_corridor_phase():
+                self._log_clock("landed (exit corridor failsafe)")
+                return
 
             self.sm.c2_complete()
+            self._log_clock("homing")
             self._climb_in_place(self.cfg.cruise_altitude_m)
             if not self._goto_and_wait(*self.home, self.cfg.cruise_altitude_m,
                                        self.cfg.arrival_tolerance_m, self.cfg.arrival_timeout_s,
@@ -653,6 +807,7 @@ class MissionNode(Node):
             self._land_and_wait()
             self.sm.touchdown()
             self._mission_complete = True
+            self._log_clock("landed")
             self.get_logger().info("[mission_node] Mission complete!")
 
         except MissionAbort as a:
@@ -696,12 +851,32 @@ class MissionNode(Node):
                 elif a.kind == "fc":
                     self.get_logger().error(
                         "[mission_node] FC is in control — companion stopped commanding")
+                elif a.kind == "sensor" and self._armed() and self._airborne:
+                    self._rtl()
                 elif self._armed() and self._airborne:
                     mav.land(self)
                 elif self._armed():
                     mav.disarm(self)
         except Exception as e:
             self.get_logger().error(f"[mission_node] abort handling error: {e}")
+
+    def _rtl(self):
+        """Sensor-dead failsafe: RTL (FC climbs to RTL_ALT, flies home,
+        lands). RTL refused or not engaged within RTL_CONFIRM_S (no home /
+        EKF / GPS) -> LAND here. In RTL the FC's own failsafes still apply
+        (FS_EKF_ACTION, BATT_FS_CRT_ACT -> LAND)."""
+        self.get_logger().error("[mission_node] Sensor dead — RTL")
+        if mav.set_mode(self, "RTL") or mav.set_mode(self, "RTL"):
+            end = time.time() + RTL_CONFIRM_S
+            while time.time() < end:
+                st = self.mavros_state
+                if st is not None and st.mode in ("RTL", "LAND"):
+                    self.get_logger().error(f"[mission_node] FC in {st.mode} — returning home")
+                    return
+                time.sleep(0.1)
+        self.get_logger().error("[mission_node] RTL NOT engaged — LANDING here")
+        if not mav.land(self):
+            mav.land(self)
 
     # ===================================================================
     # Telemetry (main thread timer)
@@ -725,6 +900,8 @@ class MissionNode(Node):
             "fcu_mode": st.mode if st else "UNKNOWN",
             "abort": None if self._abort is None else f"{self._abort[0]}: {self._abort[1]}",
             "mission_complete": self._mission_complete,
+            "mission_left_s": None if self.mission_t0 is None
+            else round(self._mission_left_s(), 1),
         }
         self.telemetry_pub.publish(String(data=json.dumps(data)))
 

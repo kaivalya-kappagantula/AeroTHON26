@@ -33,6 +33,10 @@
 #                double-counts any turn made since the frame (SITL: +-50 deg
 #                yaw oscillation)
 #   n_points     points used for the fit (diagnostic)
+#   path_dist    nearest depth point straight ahead of the NOSE within
+#                corridor_path_half_width_m each side, at flight height (m),
+#                NaN = clear. Needs no wall fit (the exit corridor's last
+#                metres have no wall in view)
 
 from std_msgs.msg import Float32MultiArray
 
@@ -51,6 +55,7 @@ FIELDS = (
     "cam_alt",
     "cam_yaw",
     "n_points",
+    "path_dist",
 )
 
 

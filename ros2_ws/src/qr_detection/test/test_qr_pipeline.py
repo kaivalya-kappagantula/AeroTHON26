@@ -27,3 +27,13 @@ def test_gate_needs_consecutive_identical_frames():
     assert not gate.update("A")
     assert gate.update("A")
     assert not gate.update("A")           # fires once only
+
+
+def test_locate_uses_the_marker_nearest_where_the_qr_should_be():
+    from qr_detection.qr_pipeline import nearest_to_expected
+    expected = (1.0, 0.0)                     # 1 m ahead
+    seen = [(0.2, 3.0), (1.3, 0.4), (-2.5, -1.0)]
+    assert nearest_to_expected(seen, expected, 2.5) == 1
+    # clutter only, all further than the radius: nothing to fly to
+    assert nearest_to_expected([(0.2, 3.0), (-2.5, -1.0)], expected, 2.5) is None
+    assert nearest_to_expected([], expected, 2.5) is None

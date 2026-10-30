@@ -3,7 +3,9 @@
 Reads raw YUV420 frames from rpicam-vid through a pipe. Run inside `ssh -Y -C`.
 Shows every 3rd frame at half size. Press q to quit.
 """
+import shutil
 import subprocess
+import sys
 import time
 import cv2
 import numpy as np
@@ -11,8 +13,14 @@ import numpy as np
 W, H, FPS = 1280, 720, 30          # keep W a multiple of 64 so rows have no padding
 FRAME_BYTES = W * H * 3 // 2       # YUV420 size
 
+# rpicam-apps is not on Ubuntu by default; older builds call it libcamera-vid
+VID = shutil.which("rpicam-vid") or shutil.which("libcamera-vid")
+if VID is None:
+    sys.exit("rpicam-vid not found: build rpicam-apps against the Pi's libcamera "
+             "(see https://github.com/raspberrypi/rpicam-apps), or use camera_ros")
+
 cmd = [
-    "rpicam-vid", "-t", "0", "-n",
+    VID, "-t", "0", "-n",
     "--codec", "yuv420",
     "--width", str(W), "--height", str(H), "--framerate", str(FPS),
     "--autofocus-mode", "continuous",   # for flight use: --autofocus-mode manual --lens-position 0.2 (5 m)

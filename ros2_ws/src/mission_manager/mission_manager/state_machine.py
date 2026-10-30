@@ -18,6 +18,8 @@
 #   ENTRY_CORRIDOR -> LANDING     (entry_test_done: entry_corridor_mission)
 #   ARENA_SEARCH / TARGET_FOUND -> LANDING  (arena_test_done: arena_search_mission)
 #   CORRIDOR_2_TRANSIT -> LANDING (exit_test_done: exit_corridor_mission)
+#   DROPPING -> LANDING           (drop_test_done: payload_drop_mission,
+#                                  arena_search_mission arena_test_drop)
 #
 # Phase 1 = TAKEOFF (gradual, to cruise altitude) + SCAN_REFERENCE_QR (read
 # in the air over the launch point and stored). qr_scanned leaves the QR
@@ -73,6 +75,7 @@ class MissionSM(StateMachine):
     entry_test_done       = ENTRY_CORRIDOR.to(LANDING)
     arena_test_done       = ARENA_SEARCH.to(LANDING) | TARGET_FOUND.to(LANDING)
     exit_test_done        = CORRIDOR_2_TRANSIT.to(LANDING)
+    drop_test_done        = DROPPING.to(LANDING)
 
     abort = (
         IDLE.to(RC_MODE) |

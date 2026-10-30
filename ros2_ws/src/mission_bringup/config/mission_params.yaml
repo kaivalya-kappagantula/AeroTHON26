@@ -1,25 +1,28 @@
 # mission_params.yaml — Central configuration for Mission 2
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║  UPDATE THESE ON COMPETITION DAY:                                ║
-# ║    - arena_corners_lat / _lon (the arena's 4 GPS corners)        ║
-# ║    - origin_lat / origin_lon  (GPS origin of the arena)          ║
-# ║    - geofence_points          (arena boundary GPS polygon)       ║
-# ║    - red_zone_N_x / _y        (no-fly zone vertices)             ║
-# ║    - corridor1_ / corridor2_waypoints_x/y (two DIFFERENT corridors)║
-# ║    - qr_content / qr_location (SITL QR simulator targets)        ║
+# ║  UPDATE ON COMPETITION DAY:                                       ║
+# ║    - mission_node arena_corners_lat / _lon (the arena's 4 GPS     ║
+# ║      corners, in order around it). Left all zero, the full        ║
+# ║      mission refuses to take off (require_arena_corners).         ║
+# ║  Nothing else is surveyed: the red mat is found in flight, both   ║
+# ║  corridors are found by their banners (green entry, blue exit).   ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 #
-# Local frame for all *_x / *_y lists: metres ENU about (origin_lat,
-# origin_lon), x = East, y = North.
+# Legacy / SITL only (NOT used by the full mission): path_planner_node
+# origin_lat/lon, corridor1_/corridor2_waypoints_x/y and red_zone_N_x/_y
+# (the old surveyed-corridor legs, fly_corridor_1/2, and the lawnmower),
+# sitl_qr_simulator, sitl_corridor_sim. Local frame for those *_x / *_y
+# lists: metres ENU about (origin_lat, origin_lon), x = East, y = North.
 #
 # FC-side settings this stack relies on (set in Mission Planner):
 #   BATT_LOW_VOLT 14.0 / BATT_CRT_VOLT 13.6, BATT_FS_LOW_ACT, BATT_FS_CRT_ACT
-#   FENCE_* + arena polygon + red-zone exclusion polygons uploaded
+#   FENCE_ALT_MAX 10 (arena_alt_m / post_entry_alt_m fly at 9 m, under it), RTL_ALT >= 500 cm
+#   (FC-side RTL must clear the 2.44 m corridor walls)
 #   PRX1_TYPE 2, AVOID_* (obstacle_avoidance/params/stage5_6_corridor.param),
 #   OA_TYPE 0 and GUID_OPTIONS 0 (plain position control in GUIDED; the
 #   corridors are flown by path_planner, not BendyRuler), SERVO10_FUNCTION 0,
-#   SERVO10_TRIM = lock PWM, RC7 = mission auto switch
+#   SERVO10_TRIM = winch stop PWM, RC7 = mission auto switch
 
 # ─── Mission Node ─────────────────────────────────────────────────
 mission_node:
@@ -58,16 +61,22 @@ mission_node:
     qr_scan_timeout_s: 60.0
     allow_qr_fallback: false            # SITL only: fly with qr_fallback_id
     qr_fallback_id: "QR_TARGET_DEMO_ID"
-    qr_initial_advance_m: 1.0           # NEW: first fly this far ahead (the QR
-                                        # is placed ~1 m in front of the drone)
+    qr_initial_advance_m: 1.0           # the QR lies this far ahead of takeoff (placed
+                                        # heading). No QR in view from over takeoff: fly
+                                        # there (compass heading) and look again
+    qr_expected_radius_m: 2.5           # only a QR within this of that spot is used:
+                                        # allows GPS drift, ignores clutter further off
     qr_search_offsets_m: [0.3, -0.3, 0.6, -0.6]  # NEW: no QR in view: hover this far
                                         # forward (+) / back (-) along the nose, in order
     qr_center_tol_m: 0.3                # close enough = no move
-    qr_center_passes: 2                 # locate -> move, repeated
+    qr_center_passes: 4                 # locate -> move (fwd + sideways), repeated
     qr_max_radius_m: 4.0                # never further from takeoff
-    qr_max_jump_m: 3.0                  # longest single correction
+    qr_max_jump_m: 3.0                  # longest single correction (longer: cut to this)
     qr_move_speed_ms: 0.5
     qr_move_tolerance_m: 0.7            # GPS noise ~1 m
+    qr_settle_speed_ms: 0.1             # after a move the camera looks only once
+    qr_settle_hold_s: 1.0               # slower than this for this long
+    qr_settle_timeout_s: 8.0            # (still moving after this: looks anyway)
     qr_locate_timeout_s: 8.0            # > qr_scanner_node locate_timeout_s
     # Gradual takeoff (as testing/waypoint_mission.py): position estimate
     # steady on the ground, arm + 7 s armed wait, lift off, slow climb to
@@ -79,13 +88,13 @@ mission_node:
     # After the reference QR: descend to this before the green banner search.
     corridor_start_alt_m: 3.0
     # Phase 2 end: climb straight up to this once past the entry corridor.
-    post_entry_alt_m: 10.0
+    post_entry_alt_m: 9.0           # under the 10 m fence (FENCE_ALT_MAX 10)
     # Phase 3, arena search (mission_manager/arena_search.py). COMPETITION
     # DAY: the arena's 4 GPS corners, in order around it. All zero = use
     # the arena_width_m x arena_height_m rectangle at origin_lat/lon.
     arena_corners_lat: [0.0, 0.0, 0.0, 0.0]
     arena_corners_lon: [0.0, 0.0, 0.0, 0.0]
-    arena_alt_m: 10.0
+    arena_alt_m: 9.0                # under the 10 m fence (FENCE_ALT_MAX 10)
     arena_sweep_speed_ms: 0.5
     arena_red_margin_m: 2.0           # keep this far from the red mat's edge
     arena_edge_margin_m: 1.0          # strips stay this far inside the arena edge
@@ -93,19 +102,40 @@ mission_node:
     arena_match_passes: 2             # fly over the match + scan again, up to this often
     arena_match_tol_m: 1.0
     arena_rescan_timeout_s: 15.0
+    require_arena_corners: true       # NEW: corners all zero -> no takeoff (full mission)
+    # Mission clock (NEW), from lift-off: the arena sweep ends early so the
+    # drop and the exit corridor + home + landing still fit in the limit.
+    mission_time_limit_s: 900.0       # 15 min
+    mission_drop_reserve_s: 90.0      # phase 4: over the QR, down, centre, release, up
+    mission_exit_reserve_s: 300.0     # phase 5 + home + land (cross the arena at 0.5 m/s,
+                                      # banner search, corridor, home). TUNE from SITL /
+                                      # flight logs: the CLOCK lines give each phase's time
     # Phase 5, exit corridor (path_planner/exit_corridor.py): corridor 1's far
     # end mirrored across the line through the takeoff point = the exit
     # corridor's arena-side entrance (blue banner). Flown to at arena_alt_m
     # around the red zones, then down to corridor_start_alt_m facing back
     # down the corridors and a +-90 deg banner search. Not found -> shifted
-    # this far sideways each way (away from corridor 1 first); then LAND.
+    # this far sideways each way (away from corridor 1 first); then the exit
+    # corridor failsafe (exit_failsafe_alt_m).
     exit_search_standoff_m: 6.0       # search this far out in the arena from it
     exit_search_shift_m: 3.0          # 0 = only the predicted point
     exit_corridor_timeout_s: 600.0    # mission_node's wait per exit corridor leg
-    # Drop: fly over the projected QR position, settle, release.
+    # EXIT CORRIDOR FAILSAFE (only there): any exit corridor failure -> climb
+    # straight up to this (above the 2.44 m walls), fly home at it, land.
+    # Fully autonomous; near the mouth path_planner first backs out from
+    # under the banner (exit_banner_clear_m).
+    exit_failsafe_alt_m: 5.0
+    # Phase 4, drop (mission_manager/payload_drop.py): over the matched QR
+    # at arena_alt_m, straight down to drop_altitude_m, centre on it with
+    # the down camera, settle, release, straight back up to arena_alt_m.
+    # Not centred / altitude not reached in time -> released anyway (GPS).
     drop_arrival_tolerance_m: 1.0
-    drop_arrival_timeout_s: 30.0
+    drop_arrival_timeout_s: 30.0      # each: over the QR, the descent
     drop_settle_s: 3.0
+    drop_center_tol_m: 0.3            # this close = centred, no move
+    drop_center_passes: 3             # locate -> move, repeated
+    drop_center_max_offset_m: 2.0     # QR further from the match = another QR: no move
+    drop_release_timeout_s: 60.0      # > payload_node winch_unwind_s + winch_reel_wait_s + ~20
     # Battery (4S under load). Companion only stops the mission; the FC acts.
     battery_critical_v: 13.6
     # Obstacle sensor health (obstacle_avoidance coverage_guard)
@@ -128,15 +158,15 @@ path_planner_node:
     down_cam_hfov_deg: 66.0
     strip_overlap: 0.20           # fraction of footprint shared by adjacent strips
     goto_publish_count: 20
-    # Corridors: straight, 5 ft (1.524 m) wide. Only the FIRST and LAST point
-    # are used: first = on the centreline 2-3 m BEFORE the mouth (the vehicle
-    # descends there and must see both walls ahead), last = just past the exit.
-    # The leg ends on the blue exit marker; the last point is the fallback
-    # length. PLACEHOLDERS — survey both on competition day.
+    # LEGACY surveyed corridor legs (fly_corridor_1/2, SITL / oa_eval only;
+    # the mission finds both corridors by their banners). Only the FIRST and
+    # LAST point are used: first = on the centreline 2-3 m before the mouth,
+    # last = just past the exit.
     corridor1_waypoints_x: [-3.0, 13.0]
     corridor1_waypoints_y: [15.0, 15.0]
     corridor2_waypoints_x: [13.0, -3.0]
     corridor2_waypoints_y: [-5.0, -5.0]
+    # LEGACY (lawnmower leg only): the mission finds the red mat in flight
     red_zone_1_x: [24.0, 36.0, 36.0, 24.0]
     red_zone_1_y: [12.0, 12.0, 22.0, 22.0]
     red_zone_2_x: [10.0, 15.0, 12.5]
@@ -163,19 +193,55 @@ path_planner_node:
     corridor_centre_min_advance: 0.25
     corridor_rate_hz: 5.0
     corridor_lookahead_m: 0.8
-    corridor_entry_timeout_s: 15.0
     corridor_exit_clearance_m: 1.0
     corridor_max_overrun_m: 3.0
-    corridor_exit_run_m: 3.0      # fly out blind only when the walls' end is <= this ahead
     corridor_exit_window_m: 3.0   # a measured wall end counts only this near the surveyed end
-    drone_width_m: 0.55           # PLACEHOLDER: MEASURE tip-to-tip incl. props
+    drone_width_m: 0.6294         # measured: 62.94 cm tip-to-tip incl. props (max)
     side_clearance_m: 0.10        # passing needs drone_width + 2 x this
     obstacle_stop_dist_m: 1.0     # wait this far from an obstacle until lined up
-    obstacle_length_m: 1.0        # assumed depth of an obstacle (face only is seen)
+    obstacle_length_m: 0.3        # assumed depth (only the face is seen): thin boxes;
+                                  # crossing behind waits pass_margin 0.5 m more, so
+                                  # real depths up to ~0.5 m still clear
     climb_clearance_m: 0.30
     body_below_camera_m: 0.15     # PLACEHOLDER: camera to lowest point (legs)
     require_corridor_perception: true   # false = GPS centreline only (SITL)
-    corridor_width_m: 1.524       # used only when perception is off
+    corridor_width_m: 3.5052      # known width (11.5 ft): the GPS line's walls
+    # ── GPS-anchored corridor line (corridor_follow.GpsCorridorTrack) ──
+    # The corridor is flown on its GPS centreline (surveyed waypoints, or the
+    # banner fix for the entry / exit corridor); walls seen by the OAK-D are
+    # noisy measurements that correct it, gated against it. No walls in view
+    # (most frames in an 11.5 ft corridor) = fly the GPS line, not hold.
+    corridor_fuse_prior_lateral_sd_m: 0.40     # the GPS line's own uncertainty
+    corridor_fuse_prior_heading_sd_deg: 3.0
+    corridor_fuse_drift_sd_m_per_sqrt_s: 0.08  # GPS wander (random walk)
+    corridor_fuse_wall_sd_one_m: 0.30          # larger = trust the walls less
+    corridor_fuse_wall_sd_two_m: 0.20
+    corridor_fuse_heading_sd_one_deg: 6.0
+    corridor_fuse_heading_sd_two_deg: 4.0
+    corridor_fuse_gate_sigma: 3.0              # wall reading this many SDs off: ignored
+    corridor_fuse_max_correction_m: 1.0        # walls never move the line further
+    corridor_fuse_max_heading_dev_deg: 10.0
+    corridor_fuse_banner_lateral_sd_m: 1.0     # entry/exit: the banner fix's position
+    corridor_fuse_banner_max_correction_m: 2.0 # (SITL ~0.8 m off + GPS drift since)
+    corridor_fuse_banner_heading_sd_deg: 10.0  # entry/exit: the banner fix's direction
+    corridor_fuse_banner_max_heading_dev_deg: 25.0  # is poor (SITL 21 deg off); the line
+                                               # pivots under the banner, walls turn it
+    corridor_fuse_width_tol_m: 0.30            # wall pair this far off the width: ignored
+    corridor_nominal_length_m: 6.7056  # 22 ft: entry/exit corridor ends here (+ exit
+                                  # clearance) when no wall end is measured
+    corridor_perception_stale_s: 1.0  # obstacle legs: no perception this long = hold
+    exit_banner_clear_m: 1.0      # exit corridor failure this near the mouth: back
+                                  # out from under the banner before the climb
+    # Exit corridor obstacles (NEW): passed beside only with this much air each
+    # side; less (a centred 3.5 ft obstacle leaves 0.29 m) -> flown OVER it
+    # (top + body_below_camera_m + climb_clearance_m, <= corridor_max_altitude_m).
+    # Can't be climbed (too tall / too near the banner) -> beside at side_clearance_m.
+    exit_pass_side_clearance_m: 0.40
+    body_above_camera_m: 0.20     # PLACEHOLDER — MEASURE: camera to the drone's top
+                                  # (props / GPS mast). Under the banner the altitude
+                                  # stays <= banner bottom - this - climb_clearance_m
+    banner_climb_after_m: 0.7     # no climb until this far past the mouth (half the
+                                  # drone's length + GPS error)
     corridor_end_visible_m: 3.5   # no set length (fly_corridor_here, entry): a
                                   # measured wall end this near must stay in
                                   # view, else the walls go on and it is dropped
@@ -201,7 +267,8 @@ path_planner_node:
                                   # front of the entrance (3 m puts an 11.5 ft
                                   # corridor's walls at the edge of the depth range)
     entry_min_altitude_m: 0.5     # floor on half the banner height
-    entry_match_frames: 3         # walls confirmed to be under the banner
+    entry_lineup_settle_s: 2.0    # at the line-up point before going in (walls
+                                  # seen meanwhile correct the banner's line)
     entry_max_backoff_m: 3.0      # backing off to see the banner again
     entry_approach_timeout_s: 90.0
     entry_research_after_s: 5.0   # NEW: banner lost this long before it is fixed:
@@ -215,10 +282,18 @@ path_planner_node:
 # ─── Payload Node ─────────────────────────────────────────────────
 payload_node:
   ros__parameters:
+    # Winch: the payload hangs on a thread on a motor spool and is heavy
+    # enough to unwind it, so the motor reels in at full speed from node
+    # start. Release = stop for winch_unwind_s (the payload drops), then
+    # full speed again and winch_reel_wait_s held before climbing.
+    # Landed (disarmed after flying above 1 m) -> stop; armed again -> spin.
+    # BENCH-CHECK: spin must reel IN (else use the other end, 1000), stop
+    # must leave the spool free; SERVO10_TRIM = winch_pwm_stop.
     release_channel: 10
-    release_pwm_open: 1100
-    release_pwm_lock: 1900
-    release_pause_s: 1.0
+    winch_pwm_spin: 2000
+    winch_pwm_stop: 1500
+    winch_unwind_s: 8.0               # time it for the full thread on the bench
+    winch_reel_wait_s: 5.0
 
 # ─── Corridor ground markers (qr_detection ground_marker_node) ───
 # Downward camera: green = corridor entrance, blue = exit. HSV in OpenCV
@@ -283,6 +358,11 @@ sitl_corridor_sim:
     exit_offset_m: 1.0
     gps_offset_m: 0.5                   # EKF vs truth: GPS-only flight would scrape a wall
 
+# ─── Red-zone node (qr_detection), same downward Cam3 ──────────────
+red_zone_node:
+  ros__parameters:
+    cam_mirror: true              # as qr_scanner_node.cam_mirror
+
 # ─── QR Scanner Node (qr_detection) ────────────────────────────────
 qr_scanner_node:
   ros__parameters:
@@ -291,10 +371,17 @@ qr_scanner_node:
     delivery_altitude: 5.0        # fallback only; rel_alt is used when available
     scan_timeout_s: 60.0
     cam_yaw_offset_deg: 0.0       # image top -> nose; rotate if mounted otherwise
-    # Reference / arena QR matched by picture when either has no text:
-    # fraction of data modules that must agree (same QR ~1.0, others ~0.5-0.6).
-    match_min_similarity: 0.85
-    # Camera intrinsics — RPi Camera Module 3 at 1280x720 (approximate).
+    cam_mirror: true              # Cam3 image mirrored left-right vs the real scene
+                                  # (as mounted): every frame is flipped back first
+    # The "QRs" are NOT QR codes but AprilTags 36h11 (the sample seen: id 2),
+    # 1 m a side: known by their decoded ID; one that does not decode is
+    # found by its size at the current height and matched by picture.
+    marker_size_m: 1.0
+    tag_dict: DICT_APRILTAG_36h11     # "" = picture only
+    # Picture match (fallback): correlation two looks must reach (SITL: same
+    # marker >= 0.84, different <= 0.73). TUNE with real prints if possible.
+    match_min_similarity: 0.78
+    # Camera intrinsics (camera_fx also sets the marker size looked for) — RPi Camera Module 3 at 1280x720 (approximate).
     # Overridden by /camera_info when camera_ros publishes a calibration.
     # To calibrate: ros2 run camera_calibration cameracalibrator
     #   --size 8x6 --square 0.025 image:=/down_frame

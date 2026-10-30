@@ -1,7 +1,8 @@
 # sim_down_camera_node.py — SITL stand-in for the downward Cam3 + camera_ros.
 #
 # Renders what the nadir camera would see from the vehicle's MAVROS pose:
-# grass, red zones and QR codes lying on flat ground. Publishes the same
+# grass, red zones and ground markers ("QRs" — really AprilTags 36h11,
+# see red_zone.marker_image) lying on flat ground. Publishes the same
 # /down_frame feed camera_ros does, so the REAL qr_scanner_node and
 # red_zone_node run unchanged in SITL.
 #
@@ -11,9 +12,15 @@
 # Ground objects are in metres East (x) / North (y) of the first GPS fix —
 # start it with the vehicle on the takeoff point:
 #   red_zones  JSON polygons      '[[[4,3],[6,3],[6,5],[4,5]]]'
-#   qr_codes   JSON [x, y, text]  '[[0,1,"AT-42"],[2.5,11.5,"AT-42"],[8,5,"AT-17"]]'
-#   marker_size_m  side of the QR's black modules (the 2-module white quiet
-#                  zone is added around it)
+#   qr_codes   JSON [x, y, key]   '[[0,1,"AT-42"],[2.5,11.5,"AT-42"],[8,5,"AT-17"]]'
+#              (same key = same AprilTag; a number = that tag ID)
+#   marker_size_m  side of a marker
+#   heading_error_deg  how far the FC's heading reads clockwise of the true
+#                  nose (a compass error made on purpose, e.g. COMPASS_DEC):
+#                  the camera is rendered at the TRUE heading, MAVROS yaw
+#                  minus this, as the real camera bolted to the frame sees
+#   mirror         publish the image mirrored left-right, as the real Cam3
+#                  mount gives it (the nodes' cam_mirror flips it back)
 #
 #   ros2 run qr_detection sim_down_camera_node --ros-args \
 #       -p red_zones:="'[[[4,3],[6,3],[6,5],[4,5]]]'" -p qr_codes:="'[[0,1,\"A\"]]'"
@@ -21,6 +28,7 @@
 import json
 import math
 
+import cv2
 import numpy as np
 import rclpy
 from cv_bridge import CvBridge
@@ -31,7 +39,7 @@ from sensor_msgs.msg import CameraInfo, Image, Imu, NavSatFix, NavSatStatus
 from std_msgs.msg import Float64
 
 from qr_detection.red_zone import (CameraModel, VehicleState, euler_ned_from_enu_quat,
-                                   qr_image, render_ground_image, render_sim_frame)
+                                   marker_image, render_ground_image, render_sim_frame)
 
 _M_PER_DEG_LAT = 111_320.0
 
@@ -43,15 +51,16 @@ class SimDownCamera(Node):
         w, h = int(gp("width", 1280)), int(gp("height", 720))
         self.cam = CameraModel.cam3_default(w, h, float(gp("mount_yaw_deg", 0.0)))
         marker = float(gp("marker_size_m", 1.0))
+        self._heading_error = math.radians(float(gp("heading_error_deg", 0.0)))
+        self._mirror = bool(gp("mirror", False))
         # JSON strings; tolerate the YAML quotes `ros2 run -p` needs if they
         # come through a launch argument verbatim
         js = lambda n: json.loads(str(gp(n, "[]")).strip().strip("'"))  # noqa: E731
         # x East / y North -> [north, east]
         self.zones = [np.array([[y, x] for x, y in z], np.float64) for z in js("red_zones")]
         self.qrs = []
-        for x, y, text in js("qr_codes"):
-            tex = qr_image(str(text))
-            self.qrs.append(((float(y), float(x)), tex, marker * tex.shape[0] / (tex.shape[0] - 4)))
+        for x, y, key in js("qr_codes"):
+            self.qrs.append(((float(y), float(x)), marker_image(str(key)), marker))
         self.background = render_sim_frame(self.cam, VehicleState(0, 0, 1, 0, 0, 0), [],
                                            np.random.default_rng(0))
         self._bridge = CvBridge()
@@ -69,11 +78,12 @@ class SimDownCamera(Node):
         self.info_pub = self.create_publisher(CameraInfo, "/camera_info", 10)
         self.create_timer(1.0 / float(gp("fps", 30.0)), self._tick)
         self.get_logger().info(
-            f"[sim_cam] {w}x{h}, {len(self.zones)} red zone(s), {len(self.qrs)} QR(s)")
+            f"[sim_cam] {w}x{h}, {len(self.zones)} red zone(s), {len(self.qrs)} marker(s)")
 
     def _imu_cb(self, msg: Imu):
         q = msg.orientation
-        self._att = euler_ned_from_enu_quat(q.x, q.y, q.z, q.w)
+        roll, pitch, yaw = euler_ned_from_enu_quat(q.x, q.y, q.z, q.w)
+        self._att = (roll, pitch, yaw - self._heading_error)
 
     def _gps_cb(self, msg: NavSatFix):
         if msg.status.status < NavSatStatus.STATUS_FIX:
@@ -95,6 +105,8 @@ class SimDownCamera(Node):
         img = render_sim_frame(self.cam, st, self.zones, self.background)
         for centre, tex, side in self.qrs:
             render_ground_image(img, self.cam, st, tex, centre, side)
+        if self._mirror:
+            img = cv2.flip(img, 1)
         stamp = self.get_clock().now().to_msg()
         msg = self._bridge.cv2_to_imgmsg(img, encoding="bgr8")
         msg.header.stamp = stamp

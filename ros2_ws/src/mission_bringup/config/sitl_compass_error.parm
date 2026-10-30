@@ -1,0 +1,12 @@
+# sitl_compass_error.parm — SITL only: make the FC's heading read ~20 deg
+# clockwise of the true nose, as a bad compass does on the real drone.
+#   sim_vehicle.py ... -w --add-param-file=<this file>
+# The EKF adds COMPASS_DEC to the magnetic heading; EK3_MAG_EF_LIM 0 makes it
+# use COMPASS_DEC instead of its own table, COMPASS_AUTODEC 0 stops the FC
+# replacing it from GPS. ARMING_MAGTHRESH 0 turns off the arming check that
+# catches exactly this (field vs the earth model, "Check mag field (xy
+# diff:149>100)"). Never load this on the real flight controller.
+COMPASS_AUTODEC 0
+COMPASS_DEC 0.35
+EK3_MAG_EF_LIM 0
+ARMING_MAGTHRESH 0

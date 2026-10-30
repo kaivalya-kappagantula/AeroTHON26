@@ -19,8 +19,11 @@
 #      read -> abort -> LAND
 #   4. arena search: BCD sweep, never over red (stop, confirm, re-plan
 #      around), matching every QR against the stored reference
-#   5. match: over it, hover arena_test_hover_s, LAND there. No match after
-#      the whole arena: LAND where the sweep ended.
+#   5. match: over it, hover arena_test_hover_s, LAND there. With
+#      arena_test_drop:=true, PHASES 3 + 4 instead: the mission's drop on it
+#      (mission_manager/payload_drop.py: straight down to drop_altitude_m,
+#      camera-centred, release, back up to arena_alt_m), then LAND there.
+#      No match after the whole arena: LAND where the sweep ended.
 # Every STATUS_LOG_S the terminal gets one status line (state, FC mode,
 # altitude, distance from the lift-off point, ground speed, battery).
 #
@@ -37,7 +40,8 @@
 #
 # State machine: IDLE -> TAKEOFF -> SCAN_REFERENCE_QR -> ENTRY_CORRIDOR
 # (both passed through) -> ARENA_SEARCH [-> TARGET_FOUND] -> LANDING
-# (arena_test_done) -> LANDED.
+# (arena_test_done) -> LANDED; with arena_test_drop: TARGET_FOUND ->
+# DROPPING -> LANDING (drop_test_done).
 # Aborts as mission_node: CH7 LOW -> LOITER; failure -> LAND; FC left
 # GUIDED -> stop commanding.
 #
@@ -66,6 +70,7 @@ class ArenaSearchMission(MissionNode):
         self.declare_parameter("arena_test_hover_s", 5.0)
         self.declare_parameter("arena_test_offset_m", 0.0)    # arena start, ahead
         self.declare_parameter("arena_test_scan_reference", False)
+        self.declare_parameter("arena_test_drop", False)      # phase 4 on the match
         # "centre": the drone sits in the middle of the area's near edge
         # (width/2 each side of its nose line); "corner": at its near-left
         # corner (the area runs to the right)
@@ -161,7 +166,12 @@ class ArenaSearchMission(MissionNode):
             self._focus_camera(float(self.cfg.arena_alt_m))     # sweep: QRs + red
             found = self.arena.run(corners)
 
-            if found is not None:
+            dropped = None
+            if found is not None and self._p("arena_test_drop"):
+                self.sm.qr_matched()
+                dropped = self._drop_payload(*found)
+                self.sm.drop_test_done()
+            elif found is not None:
                 self.sm.qr_matched()
                 hover = float(self._p("arena_test_hover_s"))
                 self.get_logger().info(
@@ -169,13 +179,16 @@ class ArenaSearchMission(MissionNode):
                 self._sleep(hover)
             else:
                 self.get_logger().warn("[arena_search_mission] No matching QR — landing here")
-            self.sm.arena_test_done()
+            if dropped is None:
+                self.sm.arena_test_done()
             self._land_and_wait()
             self.sm.touchdown()
             self._mission_complete = True
             self.get_logger().info(
                 "[arena_search_mission] Complete — landed "
-                + ("on the matching QR" if found is not None else "(no match)"))
+                + ("on the matching QR" if found is not None else "(no match)")
+                + ("" if dropped is None else
+                   " — payload " + ("released" if dropped else "NOT released")))
         except MissionAbort as a:
             self._handle_abort(a)
         except Exception as e:

@@ -32,6 +32,13 @@
 # from its centreline (max, RMS) and the closest wall are logged
 # ("[sitl_corridor_sim] corridorN pass: ...") — how well it stayed centred.
 #
+# wall_depth_max_m / wall_depth_keep make the walls as poor in stereo as
+# the real ones (11.5 ft corridor, white walls: the OAK-D bench saw both
+# walls in 81 of ~2000 frames, one in ~1800, none in ~150). Wall pixels
+# beyond wall_depth_max_m give no depth, and only wall_depth_keep of the
+# rest do (random per frame). 0 / 1 = off (perfect walls). Boxes and the
+# ground are not affected.
+#
 # gps_offset_m shifts the world laterally against the EKF (true position =
 # EKF + offset, to the LEFT of each corridor): GPS-only flight would hit a
 # wall; the camera-based centring must correct it.
@@ -100,6 +107,8 @@ class SitlCorridorSim(Node):
         dp('banner_width_m', 3.5052)       # 11.5 ft
         dp('banner_height_m', 0.4572)      # 1.5 ft
         dp('banner_above_walls_m', 0.0)
+        dp('wall_depth_max_m', 0.0)        # 0 = off
+        dp('wall_depth_keep', 1.0)
         gp = lambda n: self.get_parameter(n).value          # noqa: E731
 
         def size(i, name, default):
@@ -133,6 +142,10 @@ class SitlCorridorSim(Node):
                             wall_height=size(i, 'wall_height_m', float(gp('wall_height_m'))),
                             boxes=boxes)))
             sc = self.corridors[-1]['scene']
+            m_lat, m_lon = mav.offset_gps(*first, mouth * d_n / L, mouth * d_e / L)
+            self.get_logger().info(
+                f'[sitl_corridor_sim] corridor{i}: mouth (banner middle) at ({m_lat:.7f}, '
+                f'{m_lon:.7f}), heading {math.degrees(math.atan2(d_n, d_e)):.0f} deg ENU')
             self.get_logger().info(
                 f'[sitl_corridor_sim] corridor{i}: {sc.width:.2f} m wide, '
                 f'{sc.wall_height:.2f} m walls, {length:.1f} m long, '
@@ -147,6 +160,9 @@ class SitlCorridorSim(Node):
             self.get_logger().info(
                 f"[sitl_corridor_sim] {name} banner on {c['name']}: {2 * half:.2f} m wide, "
                 f"{bottom:.2f}-{c['banner'].z_top:.2f} m")
+        self.wall_max = float(gp('wall_depth_max_m'))
+        self.wall_keep = float(gp('wall_depth_keep'))
+        self._rng = np.random.default_rng()
         self.offset = float(gp('gps_offset_m'))
         self.drift = float(gp('gps_drift_m'))
         self.drift_period = max(1.0, float(gp('gps_drift_period_s')))
@@ -207,6 +223,8 @@ class SitlCorridorSim(Node):
         scene = c['scene'] if near else Scene(x_start=1e3, x_end=1e3 + 1.0)
         z_cam = max(self._alt, 0.05)
         z = render(scene, self.cam, (x, y, z_cam), yaw, self._pitch, self._roll)
+        if near and (self.wall_max > 0.0 or self.wall_keep < 1.0):
+            self._degrade_walls(z, scene, (x, y, z_cam), yaw)
         if near:
             # Plain cloth: no stereo depth on the banner, and none through it.
             tb = banner_depth(c['banner'], self.cam, (x, y, z_cam), yaw, self._pitch, self._roll)
@@ -237,6 +255,21 @@ class SitlCorridorSim(Node):
             elif c['length'] <= x <= c['length'] + self.strip:
                 marker = 'blue'
         self.marker_pub.publish(String(data=marker))
+
+    def _degrade_walls(self, z, scene, pos, yaw):
+        """Wall pixels (in place): none beyond wall_depth_max_m, and only
+        wall_depth_keep of the rest."""
+        args = (self.cam, pos, yaw, self._pitch, self._roll)
+        walls = np.nan_to_num(render(Scene(width=scene.width, x_start=scene.x_start,
+                                           x_end=scene.x_end, wall_height=scene.wall_height),
+                                     *args), nan=np.inf)
+        ground = np.nan_to_num(render(Scene(x_start=1e3, x_end=1e3 + 1.0), *args), nan=np.inf)
+        zz = np.nan_to_num(z, nan=np.inf)
+        wall = np.isfinite(zz) & (np.abs(zz - walls) < 1e-3) & (walls < ground - 1e-3)
+        drop = wall & (self._rng.random(z.shape) >= self.wall_keep)
+        if self.wall_max > 0.0:
+            drop |= wall & (zz > self.wall_max)
+        z[drop] = np.nan
 
     def _track_pass(self, c, x, y):
         """Ground truth: true lateral offset while between the walls; log

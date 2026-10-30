@@ -81,7 +81,8 @@ class World:
 @pytest.fixture
 def node(monkeypatch):
     rclpy.init(args=["--ros-args", "-p", "require_avoidance_sensor:=false",
-                     "-p", "require_corridor_perception:=true"])
+                     "-p", "require_corridor_perception:=true",
+                     "-p", f"corridor_width_m:={W}"])
     clock = Clock()
     monkeypatch.setattr(ppn, "time", types.SimpleNamespace(time=clock.time, sleep=clock.sleep))
     n = ppn.PathPlannerNode()

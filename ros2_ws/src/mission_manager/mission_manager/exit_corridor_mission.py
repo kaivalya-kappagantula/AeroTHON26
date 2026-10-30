@@ -51,16 +51,17 @@ class ExitCorridorMission(MissionNode):
                 self._entry_corridor_phase()
                 self.sm.entry_complete()
                 self.sm.search_exhausted()  # no arena search, no drop
-                self._exit_corridor_phase()
+                if not self._exit_corridor_phase():
+                    return                  # failsafe: above the walls, home, landed
             else:
                 self.sm.entry_complete()
                 self.sm.search_exhausted()
                 self._climb_in_place(self.cfg.corridor_start_alt_m, self.placed_yaw_enu())
                 res = self._call_leg(srv.SRV_EXIT_CORRIDOR, self.cfg.exit_corridor_timeout_s)
-                if res is None:
-                    raise MissionAbort("failure", "exit corridor: no response from path_planner")
-                if not res.success:
-                    raise MissionAbort("failure", f"exit corridor failed: {res.message}")
+                if res is None or not res.success:
+                    self._exit_failsafe("no response from path_planner" if res is None
+                                        else res.message)
+                    return
 
             hover = float(self.get_parameter("exit_test_hover_s").value)
             self.get_logger().info(

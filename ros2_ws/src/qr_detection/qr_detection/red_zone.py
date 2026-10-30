@@ -32,6 +32,7 @@ import json
 import math
 import subprocess
 import threading
+import zlib
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -525,9 +526,30 @@ def qr_image(text: str) -> np.ndarray:
     return cv2.QRCodeEncoder.create().encode(text)
 
 
+def marker_image(key: str) -> np.ndarray:
+    """A ground marker as the real ones are: an AprilTag 36h11 (NOT a QR
+    code), 1 px a cell, black border edge to edge. Same key = same tag: a
+    number is that tag ID, any other key picks one from its hash."""
+    tag_id = int(key) if key.isdigit() else zlib.crc32(key.encode()) % 587
+    d = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_APRILTAG_36h11)
+    return cv2.aruco.generateImageMarker(d, tag_id, 8)
+
+
+def pattern_image(key: str) -> np.ndarray:
+    """A square black-and-white pattern that is no tag at all (tests of the
+    picture fallback). Same key = same pattern: a random grid of 5-12 cells
+    a side, 1 px a cell; half of them get a black border."""
+    rng = np.random.default_rng(zlib.crc32(key.encode()))
+    n = int(rng.integers(5, 13))
+    tex = np.where(rng.random((n, n)) < 0.5, 0, 255).astype(np.uint8)
+    if rng.random() < 0.5:
+        tex[0, :] = tex[-1, :] = tex[:, 0] = tex[:, -1] = 0
+    return tex
+
+
 def render_ground_image(img: np.ndarray, cam: CameraModel, st: VehicleState,
                         tex: np.ndarray, centre_ne, size_m: float) -> None:
-    """Paint a square ground texture (e.g. qr_image) of side size_m centred
+    """Paint a square ground texture (e.g. marker_image) of side size_m centred
     at centre_ne = (north, east), image top facing North, into img."""
     n, e = centre_ne
     h = size_m / 2.0

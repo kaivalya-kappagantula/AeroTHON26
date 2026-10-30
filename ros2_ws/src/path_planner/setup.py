@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'path_planner_node = path_planner.path_planner_node:main',
+            'corridor_dryrun = path_planner.corridor_dryrun:main',
         ],
     },
 )

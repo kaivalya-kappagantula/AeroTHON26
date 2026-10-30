@@ -122,12 +122,31 @@ def disarm(node: Node, timeout: float = 10.0) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Altitude ceiling — competition rule: never above 10 m. Every altitude the
+# companion commands goes through takeoff() or goto(), and both clamp to this.
+# Backed up on the FC by the altitude fence (FENCE_ALT_MAX).
+# ---------------------------------------------------------------------------
+MAX_ALT_M = 10.0
+
+
+def clamp_alt(node: Node, altitude_m: float) -> float:
+    """altitude_m capped at MAX_ALT_M (logged when it had to cap)."""
+    if altitude_m > MAX_ALT_M:
+        node.get_logger().warn(
+            f"[mavros_utils] ALTITUDE CAP: {altitude_m:.2f} m requested, "
+            f"limited to {MAX_ALT_M:.1f} m")
+        return MAX_ALT_M
+    return altitude_m
+
+
+# ---------------------------------------------------------------------------
 # takeoff / land
 # ---------------------------------------------------------------------------
 def takeoff(node: Node, altitude_m: float, timeout: float = 10.0) -> bool:
     """Command takeoff to *altitude_m* via /mavros/cmd/takeoff (GUIDED, armed)."""
+    altitude_m = clamp_alt(node, float(altitude_m))
     req = CommandTOL.Request()
-    req.altitude = float(altitude_m)
+    req.altitude = altitude_m
     req.latitude = 0.0   # ignored by ArduCopter: takes off in place
     req.longitude = 0.0
     req.min_pitch = 0.0
@@ -318,7 +337,7 @@ def goto(
         msg.yaw = float(yaw_enu)
     msg.latitude = float(lat)
     msg.longitude = float(lon)
-    msg.altitude = float(altitude_m)
+    msg.altitude = clamp_alt(node, float(altitude_m))
 
     for _ in range(max(1, int(publish_count))):
         msg.header.stamp = node.get_clock().now().to_msg()

@@ -11,7 +11,8 @@
 #   2. keep a horizontal slice around flight height (drops ground and sky).
 #   3. find two PARALLEL lines a plausible width apart: for every candidate
 #      heading histogram the points' lateral coordinate; walls are the two
-#      peaks whose spacing is within width_min_m..width_max_m. The width is
+#      peaks whose spacing is within width_min_m..width_max_m — within
+#      width_tol_m of the width once it is measured. The width is
 #      NOT configured — corridors differ — it is measured by these pairs. A
 #      Hough-style search over a small heading range is deterministic and
 #      needs no random sampling.
@@ -34,6 +35,9 @@ import numpy as np
 class CorridorParams:
     width_min_m: float = 1.0          # accepted wall spacing (the width is
     width_max_m: float = 4.0          # unknown; measured from wall pairs)
+    width_tol_m: float = 0.30         # once measured, a pair must be within
+                                      # this of it (a wall and an obstacle's
+                                      # side are a "corridor" 1-2 m wide too)
     slice_lo_m: float = -0.35         # slice around camera height (+ = up)
     slice_hi_m: float = 0.50
     ground_margin_m: float = 0.25     # with a known height: cut the ground
@@ -62,6 +66,17 @@ class CorridorParams:
                                       # limit = the walls really begin there
     end_margin_m: float = 0.60        # wall end this far inside max range
     end_spread_m: float = 0.60        # both walls must end within this
+    # No wall fit (walls = 0): obstacles are still looked for, in a band
+    # around the NOSE (the planner holds the vehicle near the centreline on
+    # GPS): |v| <= width/2 - unfitted_margin_m. Keep the margin BELOW the
+    # planner's passing need (drone width + 2 x side clearance): a side
+    # clipped by the band then never looks wide enough to pass.
+    unfitted_margin_m: float = 0.60
+    unfitted_min_extent_m: float = 0.25   # narrower = a wall seen edge-on, not a face
+    path_half_width_m: float = 0.42   # path_distance band: half the drone's
+                                      # width + side clearance — NOT wider than
+                                      # the clearance the planner's lanes keep,
+                                      # or a lane's own neighbour blocks it
 
 
 def level_points(z, fx, fy, cx, cy, pitch, stride=4, roll=0.0):
@@ -131,8 +146,9 @@ def _search(x, y, p, width):
     def centre(bin_idx):
         return (bin_idx + 0.5) * p.bin_m - p.lateral_limit_m
 
-    s_lo = int(np.floor(p.width_min_m / p.bin_m))
-    s_hi = int(np.ceil(p.width_max_m / p.bin_m))
+    w_lo, w_hi = _width_range(p, width)
+    s_lo = int(np.floor(w_lo / p.bin_m))
+    s_hi = int(np.ceil(w_hi / p.bin_m))
     # Best single wall: the sharpest peak over all headings.
     a1, b1 = np.unravel_index(np.argmax(H), H.shape)
     single = H[a1, b1]
@@ -153,6 +169,14 @@ def _search(x, y, p, width):
         return angles[a], {"left": centre(br + s), "right": centre(br)}
 
     return _single(angles[a1], centre(b1), single, p, width)
+
+
+def _width_range(p, width):
+    """Accepted wall spacing: width_min..max, narrowed to width +- width_tol_m
+    once the width is measured."""
+    if width is None:
+        return p.width_min_m, p.width_max_m
+    return max(p.width_min_m, width - p.width_tol_m), min(p.width_max_m, width + p.width_tol_m)
 
 
 def _single(heading, vw, length, p, width):
@@ -257,8 +281,8 @@ def fit_corridor(x, y, h, p: CorridorParams, fov=None, height_above_ground=None,
     kept = [(k, vf, m) for k, vf, m in zip(sides, v_fit, masks) if m is not None]
     if not kept:
         return out
-    if len(kept) == 2 and not \
-            p.width_min_m <= v_fit[0] - v_fit[1] <= p.width_max_m:
+    w_lo, w_hi = _width_range(p, width)
+    if len(kept) == 2 and not w_lo <= v_fit[0] - v_fit[1] <= w_hi:
         kept = [max(kept, key=lambda t: t[2].sum())]
     if len(kept) == 1 and _single(
             heading, kept[0][1], _length(xs, ys, heading, kept[0][2], p),
@@ -307,6 +331,20 @@ def fit_corridor(x, y, h, p: CorridorParams, fov=None, height_above_ground=None,
     return out
 
 
+def path_distance(x, y, h, p: CorridorParams, height_above_ground=None):
+    """Distance (m) to the nearest slice point straight ahead of the NOSE
+    within path_half_width_m to each side, NaN if the path is clear (or too
+    few points). Needs no wall fit: obstacles are only found between fitted
+    walls, and in the last metres of a wide corridor no wall is in view — an
+    obstacle there would otherwise go unseen."""
+    keep = slice_mask(x, y, h, p, height_above_ground)
+    xs, ys = x[keep], y[keep]
+    m = (np.abs(ys) <= p.path_half_width_m) & (xs > p.min_range_m)
+    if m.sum() < p.min_obstacle_points:
+        return float("nan")
+    return float(np.percentile(xs[m], 3))
+
+
 def find_obstacle(out, x, y, h, p: CorridorParams, fov=None, height_above_ground=None):
     """Nearest obstacle between the walls already in `out` (heading_err,
     wall_left, wall_right), from the depth points x, y, h. Fills obs_* in
@@ -339,6 +377,28 @@ def find_obstacle(out, x, y, h, p: CorridorParams, fov=None, height_above_ground
                                            p, fov)
             if near <= out["walls_end"] + 0.3:    # NaN compares False
                 out["walls_end"] = nan            # the obstacle may be the occluder
+
+
+def find_obstacle_unfitted(out, x, y, h, p: CorridorParams, width, heading=0.0,
+                           fov=None, height_above_ground=None):
+    """No wall fit in `out` (walls 0): the nearest obstacle in the band
+    |v| <= width/2 - unfitted_margin_m around the vehicle, the corridor
+    direction `heading` (rad, relative to the nose: the last fitted axis, or
+    0 = the nose). Fills obs_* in place (in that rotated frame, like a fitted
+    frame's); walls and heading_err stay unset. A face narrower than
+    unfitted_min_extent_m is dropped (a wall patch seen edge-on)."""
+    if out["walls"] or width is None:
+        return
+    band = width / 2 - p.unfitted_margin_m
+    if band <= p.unfitted_min_extent_m:
+        return
+    tmp = dict(out, walls=1, heading_err=heading, walls_end=float("nan"),
+               wall_left=band + p.wall_clearance_m, wall_right=-band - p.wall_clearance_m)
+    find_obstacle(tmp, x, y, h, p, fov, height_above_ground)
+    if np.isfinite(tmp["obs_dist"]) and \
+            tmp["obs_left"] - tmp["obs_right"] >= p.unfitted_min_extent_m:
+        for k in ("obs_dist", "obs_left", "obs_right", "obs_top"):
+            out[k] = tmp[k]
 
 
 def _obstacle_top(x, y, h, cos_h, sin_h, near, o_left, o_right, v_left,

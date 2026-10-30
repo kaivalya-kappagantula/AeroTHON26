@@ -13,19 +13,25 @@ Works identically on:
   - SITL (uses sitl_qr_simulator publishing to /qr/detection directly)
 
 The node operates in two modes, switched by the services below:
-  - PHASE2: downward camera, single QR: store the reference QR — its text
-            (may be empty: the QR need not carry any information) AND its
-            picture (module grid) — in reference_qr.json / .png, publish it
-            on /qr/reference, save a snapshot of the confirming frame
-  - PHASE5: downward camera, multi-QR, match against the reference (text
-            when both are decoded, else the picture), project target to
-            NED, publish detection for mission manager
-  - LOCATE: find any QR (no decode needed) and report where it is on the
-            ground relative to the drone, so the mission can centre over it
+The "QRs" are NOT real QR codes but AprilTags (36h11, as the one sample
+seen). Every mode finds them with qr_pipeline.detect_markers: decoded tags
+are known by their ID ("tag36h11:2"); one that does not decode is still
+found as a black-and-white square of the size a 1 m marker has at the
+current height, and identified by its picture (fingerprint_similarity).
+
+  - PHASE2: downward camera, single marker: store the reference marker's
+            tag ID ("" if it did not decode) and picture in
+            reference_qr.json / .png, publish it on /qr/reference, save a
+            snapshot of the confirming frame
+  - PHASE5: downward camera, several markers, match each against the
+            reference (ID when both decoded, else picture), project the
+            target to NED, publish the detection for mission manager
+  - LOCATE: find any marker and report where it is on the ground relative
+            to the drone, so the mission can centre over it
 
 Services (called by mission_common/srv_helpers.py):
-    /perception/scan_qr          (Trigger)  — Phase 2: scan reference QR, blocks until confirmed;
-                                             message = its text ("" if it holds none)
+    /perception/scan_qr          (Trigger)  — Phase 2: scan reference marker, blocks until
+                                             confirmed; message = its tag ID ("" = not decoded)
     /perception/start_qr_scan    (Trigger)  — Phase 5: start async arena QR scanning
     /perception/locate_qr        (Trigger)  — find a QR, blocks until it is seen in
                                              locate_frames consecutive frames; message =
@@ -37,6 +43,10 @@ Subscriptions:
     /mavros/global_position/rel_alt     (std_msgs/Float64) — altitude above home
     /mavros/global_position/compass_hdg (std_msgs/Float64) — heading, deg CW from North
     /qr_scanner/delivery_id (std_msgs/String)        — inject stored ID (Phase 5)
+    /qr_scanner/locate_hint (std_msgs/String, latched) — "lat,lon,radius_m": where the
+                                                       QR should be; locate uses only a QR
+                                                       that close to it, the nearest one
+                                                       ("" = any QR, the best seen)
     /mavros/global_position/global (sensor_msgs/NavSatFix) — GPS for detection publishing
     /camera_info            (sensor_msgs/CameraInfo)  — camera intrinsics
 
@@ -50,17 +60,25 @@ Publications:
 Parameters (set via ROS2 param file or command line):
     gate_required       int   (default 3)    — frames for confirmation gate
     min_confidence      float (default 0.5)  — minimum confidence to enter gate
+    marker_size_m       float (default 1.0)  — side of a marker on the ground: what size to
+                                             look for at the current height
+    tag_dict            str   (default DICT_APRILTAG_36h11) — the markers' tag family
+                                             (cv2.aruco name); "" = picture only
     delivery_altitude   float (default 5.0)  — fallback altitude when rel_alt is unavailable
     scan_timeout_s      float (default 60.0) — Phase 2 service timeout
     cam_yaw_offset_deg  float (default 0.0)  — image-top direction vs nose, deg clockwise
+    cam_mirror          bool  (default False) — the camera's image is mirrored left-right
+                                             vs the real scene: every frame is flipped back
+                                             first (then decode and geometry see it as real)
     locate_timeout_s    float (default 8.0)  — /perception/locate_qr timeout
     locate_frames       int   (default 3)    — consecutive detections needed to report
     camera_fx/fy/cx/cy  float                — camera intrinsics from calibration
     save_snapshots      bool  (default True) — save the Phase 2 confirming frame
     snapshot_dir        str   (default ~/aerothon_captures) — where snapshots and the
                                              reference record go
-    match_min_similarity float (default 0.85) — picture match: fraction of data
-                                             modules that must agree
+    match_min_similarity float (default 0.78) — picture match: correlation the two
+                                             pictures must reach (SITL: same marker
+                                             >= 0.84, different <= 0.73)
     reference_file      str   (default "")   — load a saved reference_qr.json at start
                                              (arena tests without the reference flight).
                                              Never set it for the real mission.
@@ -81,7 +99,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 
 from sensor_msgs.msg   import Image, CameraInfo, NavSatFix
 from std_msgs.msg      import String, Float64
@@ -91,8 +109,8 @@ from cv_bridge import CvBridge
 
 # ── Import pure pipeline logic ────────────────────────────────────────────────
 from qr_detection.qr_pipeline import (
-    preprocess,
-    detect_qr_all,
+    detect_markers,
+    nearest_to_expected,
     store_delivery_id,
     find_matching_qr_image,
     fingerprint_from_rows,
@@ -102,8 +120,10 @@ from qr_detection.qr_pipeline import (
     project_to_ned,
     quad_centroid,
     ConfirmationGate,
-    DETECTOR_NAME,
 )
+
+
+GPS_MAX_AGE_S = 1.0     # a match is placed with a GPS fix at most this old
 
 
 class QRScannerNode(Node):
@@ -131,9 +151,12 @@ class QRScannerNode(Node):
         # ── Parameters ────────────────────────────────────────────────────────
         self.declare_parameter("gate_required",     3)
         self.declare_parameter("min_confidence",    0.5)
+        self.declare_parameter("marker_size_m",     1.0)
+        self.declare_parameter("tag_dict",          "DICT_APRILTAG_36h11")
         self.declare_parameter("delivery_altitude", 5.0)
         self.declare_parameter("scan_timeout_s",    60.0)
         self.declare_parameter("cam_yaw_offset_deg", 0.0)
+        self.declare_parameter("cam_mirror", False)
         self.declare_parameter("locate_timeout_s", 8.0)
         self.declare_parameter("locate_frames", 3)
         # Camera intrinsics — must be set from calibration or /camera_info
@@ -145,14 +168,17 @@ class QRScannerNode(Node):
         # Snapshot of the Phase 2 confirming frame
         self.declare_parameter("save_snapshots", True)
         self.declare_parameter("snapshot_dir",   "~/aerothon_captures")
-        self.declare_parameter("match_min_similarity", 0.85)
+        self.declare_parameter("match_min_similarity", 0.78)
         self.declare_parameter("reference_file", "")
 
         self._gate_required     = self.get_parameter("gate_required").value
         self._min_confidence    = self.get_parameter("min_confidence").value
+        self._marker_size_m     = float(self.get_parameter("marker_size_m").value)
+        self._tag_dict          = str(self.get_parameter("tag_dict").value).strip()
         self._delivery_altitude = self.get_parameter("delivery_altitude").value
         self._scan_timeout_s    = float(self.get_parameter("scan_timeout_s").value)
         self._cam_yaw_offset    = float(self.get_parameter("cam_yaw_offset_deg").value)
+        self._cam_mirror        = bool(self.get_parameter("cam_mirror").value)
         self._locate_timeout_s  = float(self.get_parameter("locate_timeout_s").value)
         self._locate_frames     = int(self.get_parameter("locate_frames").value)
         self._fx = self.get_parameter("camera_fx").value
@@ -168,12 +194,13 @@ class QRScannerNode(Node):
         self._mode          = self.MODE_IDLE
         self._gate          = ConfirmationGate(required=self._gate_required)
         self._delivery_id   : str | None = None   # set after Phase 2 confirms
-        self._reference_fp  : np.ndarray | None = None   # reference QR module grid
+        self._reference_fp  : np.ndarray | None = None   # reference marker picture
         self._ref_gate      = ReferenceGate(self._gate_required, self._min_similarity)
         self._current_alt   : float | None = None   # rel_alt, metres above home
         self._heading_deg   : float | None = None   # compass heading
         self._bridge        = CvBridge()
         self._current_gps   = [None, None]  # [lat, lon] from MAVROS
+        self._gps_t         = 0.0           # when it came (monotonic)
 
         # Threading events for service blocking
         self._phase2_done_event = threading.Event()
@@ -181,12 +208,8 @@ class QRScannerNode(Node):
         self._locate_done_event = threading.Event()
         self._locate_hits       : list[tuple[float, float]] = []   # (forward, right) per frame
         self._locate_result     : str | None = None
-        # Detection-only QR finder (no decode): sees a QR that is too small,
-        # blurred or off-centre to read yet.
-        try:
-            self._finder = cv2.QRCodeDetectorAruco()
-        except AttributeError:
-            self._finder = cv2.QRCodeDetector()
+        self._locate_partial    = False   # last locate saw only part of the QR
+        self._locate_hint       : tuple | None = None   # (lat, lon, radius_m)
 
         # ── QoS ───────────────────────────────────────────────────────────────
         sensor_qos = QoSProfile(
@@ -216,11 +239,18 @@ class QRScannerNode(Node):
         )
 
         # ── Subscribers ───────────────────────────────────────────────────────
+        # Frames in their own callback group: processing one takes about as
+        # long as the next takes to come, so sharing the default group with
+        # the telemetry starved it — the GPS used to place a match was up to
+        # ~25 s old in SITL and the match landed 10+ m off.
         self.create_subscription(
-            Image, "/down_frame", self._frame_cb, sensor_qos)
+            Image, "/down_frame", self._frame_cb, sensor_qos,
+            callback_group=MutuallyExclusiveCallbackGroup())
 
         self.create_subscription(
             String, "/qr_scanner/delivery_id", self._delivery_id_cb, latched_qos)
+        self.create_subscription(
+            String, "/qr_scanner/locate_hint", self._locate_hint_cb, latched_qos)
 
         self.create_subscription(
             Float64, "/mavros/global_position/rel_alt", self._rel_alt_cb, mavros_qos)
@@ -258,8 +288,11 @@ class QRScannerNode(Node):
         )
 
         self.get_logger().info(
-            f"[qr_scanner] Started | detector: {DETECTOR_NAME} | "
-            f"gate={self._gate_required} | min_conf={self._min_confidence}"
+            f"[qr_scanner] Started | marker {self._marker_size_m:.2f} m, "
+            f"tags {self._tag_dict or 'off'} + picture | "
+            f"gate={self._gate_required} | min_conf={self._min_confidence} | "
+            f"min_sim={self._min_similarity:.2f} | "
+            f"cam_yaw={self._cam_yaw_offset:.0f} deg | mirror={self._cam_mirror}"
         )
         if self._save_snapshots:
             self.get_logger().info(
@@ -347,6 +380,7 @@ class QRScannerNode(Node):
         self.get_logger().info("[qr_scanner] /perception/locate_qr called — activating LOCATE")
         self._locate_hits = []
         self._locate_result = None
+        self._locate_partial = False
         self._locate_frame = None          # last frame seen while locating
         self._locate_done_event.clear()
         self._mode = self.MODE_LOCATE
@@ -359,7 +393,10 @@ class QRScannerNode(Node):
         if found and self._locate_result:
             response.success = True
             response.message = self._locate_result
-            self.get_logger().info(f"[qr_scanner] QR located: {self._locate_result}")
+            self.get_logger().info(
+                f"[qr_scanner] QR located: {self._locate_result}"
+                + (" — only part of it in view: centre estimated from that part"
+                   if self._locate_partial else ""))
         else:
             response.success = False
             response.message = "no QR seen"
@@ -391,6 +428,18 @@ class QRScannerNode(Node):
                 f"[qr_scanner] Delivery ID set for Phase 5: '{self._delivery_id}'"
             )
 
+    def _locate_hint_cb(self, msg: String) -> None:
+        try:
+            lat, lon, radius = (float(x) for x in msg.data.split(","))
+            self._locate_hint = (lat, lon, radius)
+            self.get_logger().info(
+                f"[qr_scanner] Locate: only a QR within {radius:.1f} m of "
+                f"({lat:.7f}, {lon:.7f}), the nearest")
+        except ValueError:
+            if self._locate_hint is not None:
+                self.get_logger().info("[qr_scanner] Locate: any QR")
+            self._locate_hint = None
+
     def _rel_alt_cb(self, msg: Float64) -> None:
         self._current_alt = float(msg.data)
 
@@ -408,6 +457,7 @@ class QRScannerNode(Node):
     def _gps_cb(self, msg: NavSatFix) -> None:
         """Track current GPS position for /qr/detection publishing."""
         self._current_gps[0] = msg.latitude
+        self._gps_t = time.monotonic()
         self._current_gps[1] = msg.longitude
 
     def _frame_cb(self, msg: Image) -> None:
@@ -423,21 +473,23 @@ class QRScannerNode(Node):
         except Exception as e:
             self.get_logger().warn(f"[qr_scanner] CvBridge conversion failed: {e}")
             return
+        if self._cam_mirror:
+            frame = cv2.flip(frame, 1)            # mirrored camera -> real left/right
         if self._mode == self.MODE_LOCATE:
             self._locate_frame = frame
 
-        # ── Pre-processing (same for all modes) ───────────────────────────────
-        processed  = preprocess(frame)
-
-        if self._mode == self.MODE_LOCATE:
-            self._handle_locate(processed)
-            return
-
-        detections = detect_qr_all(processed, min_confidence=self._min_confidence)
+        # ── Markers of the size a marker has at this height ──────────────────
+        alt = self._current_alt if (self._current_alt or 0.0) > 1.0 \
+            else self._delivery_altitude
+        detections = detect_markers(frame, self._fx * self._marker_size_m / alt,
+                                    min_confidence=self._min_confidence,
+                                    tag_dict=self._tag_dict)
 
         # ── Dispatch to phase handler ─────────────────────────────────────────
-        if self._mode == self.MODE_PHASE2:
-            self._handle_phase2(detections, frame, processed)
+        if self._mode == self.MODE_LOCATE:
+            self._handle_locate(detections)
+        elif self._mode == self.MODE_PHASE2:
+            self._handle_phase2(detections, frame)
         elif self._mode == self.MODE_PHASE5:
             self._handle_phase5(detections)
 
@@ -468,34 +520,45 @@ class QRScannerNode(Node):
         east  = fwd_b * math.sin(h) + rgt_b * math.cos(h)
         return fwd_b, rgt_b, north, east, alt
 
-    def _handle_locate(self, processed: np.ndarray) -> None:
+    def _handle_locate(self, detections: list[dict]) -> None:
         """Accumulate consecutive detections; report their average."""
         if self._locate_done_event.is_set():
             return
-        try:
-            ok, pts = self._finder.detectMulti(processed)
-        except cv2.error:
-            ok, pts = False, None
-
-        if not ok or pts is None or len(pts) == 0:
+        if not detections:
             self._locate_hits = []                      # streak broken
             self._publish_status(f"LOCATE_SEARCHING 0/{self._locate_frames}")
             return
 
-        # Largest quad = the QR we are closest to / see best.
-        quads = [p.reshape(-1, 2) for p in pts]
-        best  = max(quads, key=lambda q: cv2.contourArea(q.astype(np.float32)))
-        u, v  = quad_centroid(best)
-
-        fwd, rgt, _, _, _ = self._pixel_to_offsets(u, v)
+        # A cut marker's points are the WHOLE square worked out from the part
+        # in view (detect_markers), so its centre is where it really is.
+        looks = [(d, self._pixel_to_offsets(*quad_centroid(d["points"]))) for d in detections]
+        hint = self._locate_hint
+        if hint is not None and self._current_gps[0] is not None:
+            # Where the QR should be: only one that close, the nearest
+            lat0, lon0 = self._current_gps
+            hint_n = (hint[0] - lat0) * 111_320.0
+            hint_e = (hint[1] - lon0) * 111_320.0 * math.cos(math.radians(lat0))
+            pick = nearest_to_expected([(o[2], o[3]) for _, o in looks], (hint_n, hint_e), hint[2])
+            if pick is None:
+                self._locate_hits = []                  # streak broken
+                self._publish_status(
+                    f"LOCATE_SEARCHING 0/{self._locate_frames} "
+                    f"({len(looks)} seen, none within {hint[2]:.1f} m of the expected spot)")
+                return
+            best, (fwd, rgt, _, _, _) = looks[pick]
+        else:
+            # Best marker first: whole ones before ones cut by the frame edge
+            best, (fwd, rgt, _, _, _) = looks[0]
         # A jump > 0.75 m between frames = a different object: restart the streak.
         if self._locate_hits and math.hypot(fwd - self._locate_hits[-1][0],
                                             rgt - self._locate_hits[-1][1]) > 0.75:
             self._locate_hits = []
         self._locate_hits.append((fwd, rgt))
+        self._locate_partial = best["partial"]
         self._publish_status(
             f"LOCATE_SEEN {len(self._locate_hits)}/{self._locate_frames} "
-            f"fwd={fwd:+.2f} right={rgt:+.2f}")
+            f"fwd={fwd:+.2f} right={rgt:+.2f}"
+            + (" (part in view — centre estimated)" if best["partial"] else ""))
 
         if len(self._locate_hits) >= self._locate_frames:
             n = len(self._locate_hits)
@@ -518,13 +581,12 @@ class QRScannerNode(Node):
     # Phase 2 — Initial QR scan
     # ═════════════════════════════════════════════════════════════════════════
 
-    def _handle_phase2(self, detections: list[dict], frame: np.ndarray,
-                       processed: np.ndarray) -> None:
+    def _handle_phase2(self, detections: list[dict], frame: np.ndarray) -> None:
         """
-        Phase 2: drone is hovering at 5 m over the reference QR.
-        Feed the largest QR into the reference gate (same QR in
-        gate_required consecutive frames, by text or by picture). On
-        confirmation, store its text ("" if it holds none) and its picture,
+        Phase 2: drone is hovering over the reference marker.
+        Feed the best marker into the reference gate (same marker in
+        gate_required consecutive frames, by tag ID or by picture). On
+        confirmation, store its tag ID ("" if it never decoded) and picture,
         switch to IDLE, wake the blocking /perception/scan_qr call, then save
         the reference record and a snapshot of the confirming frame.
         """
@@ -539,10 +601,8 @@ class QRScannerNode(Node):
             self._delivery_id = store_delivery_id(self._ref_gate.text)
             self._reference_fp = self._ref_gate.fingerprint
             shown = f"'{self._delivery_id}'" if self._delivery_id else "(no text — picture only)"
-            grid = ("picture NOT readable — text only" if self._reference_fp is None
-                    else f"{self._reference_fp.shape[0]}x{self._reference_fp.shape[0]} modules")
             self.get_logger().info(
-                f"[qr_scanner] [Phase 2] REFERENCE QR CONFIRMED: {shown}, {grid}"
+                f"[qr_scanner] [Phase 2] REFERENCE MARKER CONFIRMED: {shown}"
             )
 
             self._publish_status(f"PHASE2_CONFIRMED:{self._delivery_id}")
@@ -562,9 +622,11 @@ class QRScannerNode(Node):
             if best is None:
                 seen = "none"
             elif best["fingerprint"] is None:
-                seen = "QR (not readable yet)"
+                seen = "marker cut by the frame edge"
+            elif best["data"]:
+                seen = f"'{best['data']}'"
             else:
-                seen = f"'{best['data']}'" if best["data"] else "QR (no text)"
+                seen = f"marker (not decoded) conf={best['confidence']:.2f}"
             self._publish_status(
                 f"PHASE2_SCANNING gate={self._ref_gate.progress} best={seen}"
             )
@@ -572,7 +634,7 @@ class QRScannerNode(Node):
     def _store_reference(self, snapshot: Path | None) -> None:
         """
         Write the reference QR to snapshot_dir — reference_qr_<time>.json
-        (+ .png of its module grid) and a copy as reference_qr.json /
+        (+ .png of its picture) and a copy as reference_qr.json /
         reference_qr.png (the latest) — and publish the record, latched, on
         /qr/reference. Any failure is logged; the in-memory reference is
         what the mission uses.
@@ -584,8 +646,8 @@ class QRScannerNode(Node):
             "time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "text": self._delivery_id,
             "has_text": bool(self._delivery_id),
-            "modules": None if fp is None else int(fp.shape[0]),
-            "grid": None if fp is None else fingerprint_to_rows(fp),
+            "picture_px": None if fp is None else int(fp.shape[0]),
+            "picture": None if fp is None else fingerprint_to_rows(fp),
             "drone_lat": lat,
             "drone_lon": lon,
             "rel_alt_m": None if alt is None else round(alt, 2),
@@ -610,8 +672,8 @@ class QRScannerNode(Node):
         """Load a reference_qr.json written by _store_reference (arena tests)."""
         try:
             record = json.loads(path.read_text())
-            grid = record.get("grid")
-            self._reference_fp = fingerprint_from_rows(grid) if grid else None
+            pic = record.get("picture")
+            self._reference_fp = fingerprint_from_rows(pic) if pic else None
             self._delivery_id = str(record.get("text") or "")
             if self._reference_fp is None and not self._delivery_id:
                 raise ValueError("record has neither text nor picture")
@@ -673,6 +735,15 @@ class QRScannerNode(Node):
             )
 
             # ── Publish "content|qr_lat|qr_lon" for mission_node ──────────────
+            gps_age = time.monotonic() - self._gps_t
+            if self._current_gps[0] is not None and gps_age > GPS_MAX_AGE_S:
+                # the drone has moved on since: the match would be put in the
+                # wrong place — confirm it again on fresh frames
+                self.get_logger().warn(
+                    f"[qr_scanner] [Phase 5] GPS {gps_age:.1f} s old — not publishing "
+                    "the match, confirming it again")
+                self._gate.reset()
+                return
             if self._current_gps[0] is not None:
                 lat0, lon0 = self._current_gps
                 qr_lat = lat0 + d_north / 111_320.0

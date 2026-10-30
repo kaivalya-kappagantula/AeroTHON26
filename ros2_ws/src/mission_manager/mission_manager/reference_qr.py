@@ -6,17 +6,28 @@
 # mission does. The caller is a MissionNode that has already taken off to
 # cruise_altitude_m over the launch point.
 #
-#   0. AHEAD: fly qr_initial_advance_m (1 m) forward along the heading the
-#      drone was placed with — the reference QR is placed that far in front
-#      of it — so the search starts over it.
+#   0. EXPECT: the QR lies ~qr_initial_advance_m (1 m) straight ahead of
+#      the takeoff point, along the heading the drone was placed with. That
+#      spot is sent to qr_scanner_node (/qr_scanner/locate_hint): it uses
+#      only a QR within qr_expected_radius_m of it (GPS drift allowed) and
+#      the one nearest it — clutter elsewhere is never flown to.
 #   1. FIND: /perception/locate_qr reports where a QR is relative to the
 #      drone (detection only — works before the QR is readable, and for a QR
-#      that holds no text). None in view -> hover a little FORWARD or BACK of
-#      that point along the placed heading, never sideways
-#      (qr_search_offsets_m, in order) and look again. The camera's short
-#      side runs along the nose (+-1.15 m at 3 m), its long side across.
-#   2. CENTRE over it, along the nose only (forward/back): locate -> move,
-#      qr_center_passes times. Sideways it only has to be in the frame.
+#      that holds no text). Only PART of the QR in view (cut by the frame
+#      edge) counts: its centre is worked out from that part and the QR's
+#      known size, and the drone flies straight there — no blind search.
+#      It looks first from over the takeoff point: the
+#      reference QR is placed ~1 m ahead, inside the frame at 5 m (+-1.9 m
+#      along the nose, +-3.4 m across). Only if none is in view does it fly
+#      qr_initial_advance_m (1 m) ahead, then a little FORWARD or BACK of
+#      that point (qr_search_offsets_m, in order) and look again. Those
+#      blind steps (only when nothing of a QR is in view) go along the
+#      compass heading the drone was placed with.
+#   2. CENTRE over it, forward AND sideways, from what the camera sees:
+#      locate -> move by the seen offset, re-measured every pass
+#      (qr_center_passes). A wrong compass heading only turns each
+#      correction a little off line — the next look catches what it missed —
+#      instead of steering the drone diagonally away from the QR.
 #   3. READ: /perception/scan_qr (same QR in 3 frames, by text or by
 #      picture); a timed-out read re-centres and tries again
 #      (qr_scan_attempts). qr_scanner_node stores the result — text ("" if
@@ -24,16 +35,51 @@
 #      ~/aerothon_captures/reference_qr.json + .png and on /qr/reference.
 #
 # Safety: no move ever takes the drone more than qr_max_radius_m from the
-# takeoff point, and no single correction is longer than qr_max_jump_m.
+# takeoff point, and no single correction is longer than qr_max_jump_m
+# (a longer one is cut to qr_max_jump_m in the same direction).
 # A failed find/read is NOT an abort: run() returns None and the caller
 # decides what happens next.
 
 import math
+import time
+
+from std_msgs.msg import String
 
 from mission_common import mavros_utils as mav
 from mission_common import srv_helpers as srv
 
 SRV_LOCATE_QR = "/perception/locate_qr"
+
+
+def wait_stopped(node, cfg, label: str) -> None:
+    """Wait until the drone has stopped: horizontal speed below
+    qr_settle_speed_ms for qr_settle_hold_s, at most qr_settle_timeout_s.
+    A goto counts as arrived within qr_move_tolerance_m — mid-move for short
+    steps — and a camera look while moving (and tilted, and on a curved path
+    when the compass is off) mis-measures the QR. Also used by the arena
+    search before it looks at a match again (arena_search._refine)."""
+    limit = float(cfg.qr_settle_speed_ms)
+    hold = float(cfg.qr_settle_hold_s)
+    timeout = float(cfg.qr_settle_timeout_s)
+    log = node.get_logger()
+    t0 = time.time()
+    still_since = None
+    while time.time() - t0 < timeout:
+        node._tick()
+        v = node.ground_speed
+        now = time.time()
+        if v is not None and v < limit:
+            if still_since is None:
+                still_since = now
+            if now - still_since >= hold:
+                log.info(f"{label}: stopped ({now - t0:.1f} s, {v:.2f} m/s)")
+                return
+        else:
+            still_since = None
+        time.sleep(0.1)
+    v = node.ground_speed
+    log.warn(f"{label}: still moving after {timeout:.0f} s "
+             f"({'?' if v is None else f'{v:.2f}'} m/s) — looking anyway")
 
 
 class ReferenceQr:
@@ -57,9 +103,14 @@ class ReferenceQr:
             self._log().warn(f"[reference_qr] {label}: no GPS — not moving")
             return False
         dist = math.hypot(d_north, d_east)
-        if dist > float(cfg.qr_max_jump_m):
-            self._log().warn(f"[reference_qr] {label}: {dist:.1f} m > qr_max_jump_m — not moving")
-            return False
+        max_jump = float(cfg.qr_max_jump_m)
+        if dist > max_jump:
+            # e.g. the centre of a QR only partly in view, estimated past the
+            # frame: go qr_max_jump_m towards it — the next look sees more
+            self._log().info(f"[reference_qr] {label}: {dist:.1f} m > qr_max_jump_m — "
+                             f"moving {max_jump:.1f} m towards it")
+            d_north, d_east = d_north * max_jump / dist, d_east * max_jump / dist
+            dist = max_jump
 
         lat, lon = mav.offset_gps(node.gps[0], node.gps[1], d_north, d_east)
         if node.home is not None:
@@ -79,8 +130,11 @@ class ReferenceQr:
                 max(15.0, 4.0 * dist / max(speed, 0.1)), speed, face_target=False,
                 hold_yaw_enu=node.placed_yaw_enu()):
             self._log().warn(f"[reference_qr] {label}: arrival not confirmed — carrying on")
-        node._sleep(2.0)                  # settle before the camera looks again
+        self._wait_stopped(label)         # settle before the camera looks again
         return True
+
+    def _wait_stopped(self, label: str) -> None:
+        wait_stopped(self.node, self.cfg, f"[reference_qr] {label}")
 
     def _step_forward(self, dist_m: float) -> bool:
         hdg = self.node.placed_heading_deg
@@ -117,13 +171,17 @@ class ReferenceQr:
             f"(N={n:+.2f} E={e:+.2f})")
         return n, e, f, r
 
-    def _find_and_center(self) -> bool:
-        """Look here, then a little forward / back along the nose until a QR
-        is in view; then centre over it along the nose."""
-        cfg = self.cfg
+    def _search(self, ahead: float = 0.0):
+        """Look here; none in view -> step ahead (compass heading), then a
+        little forward / back along the nose until a QR is in view. Returns
+        the first locate reply, or None."""
         found = self._locate()
+        if found is None and ahead > 0.0:
+            self._log().info(f"[reference_qr] No QR in view — moving {ahead:.1f} m ahead")
+            self._step_forward(ahead)
+            found = self._locate()
         at = 0.0                          # along-nose offset from where the search began
-        for target in [float(x) for x in cfg.qr_search_offsets_m]:
+        for target in [float(x) for x in self.cfg.qr_search_offsets_m]:
             if found is not None:
                 break
             self._log().info(f"[reference_qr] No QR in view — trying {target:+.1f} m "
@@ -132,21 +190,35 @@ class ReferenceQr:
                 break
             at = target
             found = self._locate()
-        if found is None:
-            self._log().warn("[reference_qr] QR not found")
-            return False
+        return found
 
-        tol = float(cfg.qr_center_tol_m)
-        for i in range(int(cfg.qr_center_passes)):
-            _, _, fwd, _ = found
-            if abs(fwd) <= tol:
-                self._log().info("[reference_qr] Centred over the QR (along the nose)")
-                return True
-            self._step_forward(fwd)
+    def _center(self, found) -> None:
+        """Move by the offset the camera sees (forward and sideways), look
+        again, up to qr_center_passes times. Each pass starts from a fresh
+        look, so a heading error does not add up."""
+        tol = float(self.cfg.qr_center_tol_m)
+        for i in range(1, int(self.cfg.qr_center_passes) + 1):
+            n, e, fwd, rgt = found
+            off = math.hypot(fwd, rgt)
+            if off <= tol:
+                self._log().info(f"[reference_qr] Centred over the QR ({off:.2f} m off)")
+                return
+            if not self._move_by(n, e, f"centre pass {i}"):
+                return
             found = self._locate()
             if found is None:
                 self._log().warn("[reference_qr] Lost the QR after moving — reading here")
-                return True
+                return
+        _, _, fwd, rgt = found
+        self._log().warn(f"[reference_qr] Still {math.hypot(fwd, rgt):.2f} m off after "
+                         f"{int(self.cfg.qr_center_passes)} passes — reading here")
+
+    def _find_and_center(self, ahead: float = 0.0) -> bool:
+        found = self._search(ahead)
+        if found is None:
+            self._log().warn("[reference_qr] QR not found")
+            return False
+        self._center(found)
         return True
 
     def _read(self):
@@ -164,15 +236,37 @@ class ReferenceQr:
 
     # -------------------------------------------------------------------
 
+    def _expected_spot(self):
+        """(lat, lon) the QR should be at: qr_initial_advance_m ahead of
+        takeoff along the placed heading, or None if either is unknown."""
+        node = self.node
+        if node.home is None or node.placed_heading_deg is None:
+            return None
+        d, h = float(self.cfg.qr_initial_advance_m), math.radians(node.placed_heading_deg)
+        return mav.offset_gps(node.home[0], node.home[1], d * math.cos(h), d * math.sin(h))
+
+    def _send_hint(self, spot) -> None:
+        pub = getattr(self.node, "locate_hint_pub", None)
+        if pub is None:
+            return
+        radius = float(self.cfg.qr_expected_radius_m)
+        pub.publish(String(data="" if spot is None else f"{spot[0]:.8f},{spot[1]:.8f},{radius:.2f}"))
+        if spot is not None:
+            self._log().info(f"[reference_qr] Expecting the QR {self.cfg.qr_initial_advance_m:.1f} m "
+                             f"ahead of takeoff (using only a QR within {radius:.1f} m of it)")
+
     def run(self):
-        """Fly ahead over it, find, centre, read. Returns the QR's text ("" =
+        """Find (from here first), centre, read. Returns the QR's text ("" =
         read, no text in it — matched by picture), or None if it was not
         found / not read."""
-        ahead = float(self.cfg.qr_initial_advance_m)
-        if ahead > 0.0:
-            self._log().info(f"[reference_qr] Moving {ahead:.1f} m ahead over the reference QR")
-            self._step_forward(ahead)
-        if not self._find_and_center():
+        self._send_hint(self._expected_spot())
+        try:
+            return self._run()
+        finally:
+            self._send_hint(None)          # other locates (payload drop) look anywhere
+
+    def _run(self):
+        if not self._find_and_center(float(self.cfg.qr_initial_advance_m)):
             return None
         text = self._read()
         if text is None:

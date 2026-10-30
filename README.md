@@ -11,7 +11,8 @@ mission, the architecture, how every phase works and why, testing, and what's op
 | 1 | Gradual takeoff to 5 m, find + centre over the reference QR, read it and store it (by its text, or by its picture if it holds none) | SITL ✅, drone not yet |
 | 2 | Entry corridor: descend to 3 m, find the green banner (±90° sweep), line up on the walls under it, fly through, climb to 10 m | SITL ✅, drone not yet |
 | 3 | Arena search: sweep the arena at 10 m (strips sized so a 1 m QR always fits), never over the red mat (stop, confirm, re-plan around it with a 2 m margin), find the QR that matches the reference | SITL ✅, drone not yet |
-| later | Payload drop, corridor 2, return home | in progress |
+| 4 | Payload drop: over the match, straight down to 5 m, centre on the QR with the down camera, release, straight back up to 10 m | SITL ✅, drone not yet |
+| later | Corridor 2, return home | in progress |
 ## Quick start
 
 Needs **Ubuntu 24.04 + ROS 2 Jazzy** ([install guide](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html)).
@@ -41,6 +42,8 @@ phase, then lands.
 | Phase 1 (QR) | `ros2 launch mission_bringup qr_scan_mission.launch.py` | `ros2 launch mission_bringup qr_scan_mission.launch.py sim:=true` |
 | Phase 2 (entry corridor) | `ros2 launch mission_bringup entry_corridor.launch.py takeoff_alt:=5` | `ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true mission:=entry_corridor` |
 | Phase 3 (arena search, 25 x 25 m test area) | `ros2 launch mission_bringup arena_search_mission.launch.py` | `ros2 launch mission_bringup arena_search_mission.launch.py sim:=true` |
+| Phase 4 (drop on a QR placed 5 m ahead) | `ros2 launch mission_bringup payload_drop_mission.launch.py` | `ros2 launch mission_bringup payload_drop_mission.launch.py sim:=true` |
+| Phases 3 + 4 (sweep, then the drop on the match) | `ros2 launch mission_bringup arena_search_mission.launch.py drop:=true` | add `sim:=true start:=corner` |
 | Whole mission | `ros2 launch mission_bringup mission.launch.py launch_mavros:=true launch_camera:=true` | `ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true` |
 
 On the drone:

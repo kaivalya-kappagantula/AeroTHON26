@@ -12,7 +12,7 @@
 # The defaults are the green banner's. The blue exit banner runs the same
 # code with its own hue band (config/banner_blue.yaml): its pale test is Lab
 # b* (blue-yellow axis, b_min) instead of a*, and allow_top false keeps a
-# blue sky (a blob on the top edge) from being acquired.
+# blue sky (a blob on the top edge) from being acquired or jumped onto.
 
 import math
 from dataclasses import dataclass
@@ -151,6 +151,10 @@ class Tracker:
             gate = max(a.gate * w, 0.75 * max(bw, bh))
             near = [(math.hypot(c["cx"] - cx, c["cy"] - cy), c) for c in cands]
             near = [(d, c) for d, c in near if d < gate]
+            if not a.allow_top and cy - bh / 2 > 0.1 * h:
+                # a blob on the top edge (sky) only once the banner itself
+                # has slid up near it — never a jump onto it from below
+                near = [(d, c) for d, c in near if not c["top"]]
             if near:   # big and close wins; a tracked banner may slide onto the bottom edge
                 pick = max(near, key=lambda dc: dc[1]["area"] / (1.0 + dc[0] / gate))[1]
         else:

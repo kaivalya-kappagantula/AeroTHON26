@@ -33,6 +33,14 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
+from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _yaml_value(mission_params: str, name: str) -> str:
+    """A mission_node parameter as mission_params.yaml sets it (hardware value)."""
+    import yaml
+    with open(mission_params) as f:
+        return str(yaml.safe_load(f)["mission_node"]["ros__parameters"][name])
 
 
 def generate_launch_description():
@@ -44,8 +52,8 @@ def generate_launch_description():
         "launch_mavros", default_value="false",
         description="Launch MAVROS (set false if started separately)")
     fcu_url_arg = DeclareLaunchArgument(
-        "fcu_url", default_value="tcp://127.0.0.1:5760",
-        description="MAVROS FCU URL (SITL tcp, or serial device:baud for hardware)")
+        "fcu_url", default_value="/dev/ttyAMA2:921600",
+        description="MAVROS FCU URL (Pi TELEM2 by default; SITL: tcp://127.0.0.1:5760)")
     launch_camera_arg = DeclareLaunchArgument(
         "launch_camera", default_value="false",
         description="Start camera_ros for the downward RPi Camera Module 3 "
@@ -53,6 +61,10 @@ def generate_launch_description():
     camera_arg = DeclareLaunchArgument(
         "camera", default_value="0",
         description="libcamera camera index or name for the downward camera")
+    awb_mode_arg = DeclareLaunchArgument(
+        "awb_mode", default_value="5",
+        description="Cam3 white balance (5 = daylight: keeps the red mat's colour stable, "
+                    "as the arena test flights; 0 = auto)")
 
     # ================================================================
     # MAVROS (Jazzy ships apm.launch as XML -> AnyLaunchDescriptionSource)
@@ -85,31 +97,38 @@ def generate_launch_description():
         name="red_zone_node",
         output="screen",
         # one red mat: confirmed in flight (no hover), red joined to it added in flight
-        parameters=[{"source": "topic", "grow_known_zones": True, "confirm_in_flight": True}],
+        parameters=[mission_params,     # red_zone_node: cam_mirror
+                    {"source": "topic", "grow_known_zones": True, "confirm_in_flight": True}],
     )
     mission_node = mission_node_of("mission_manager", "mission_node")
 
     # ================================================================
     # Downward camera: RPi Camera Module 3 via camera_ros
     # ================================================================
-    # libcamera's RGB888 is laid out B,G,R in memory, which camera_ros
-    # publishes as "bgr8" — what qr_scanner_node converts to anyway.
+    # Exactly the camera the phase test flights use (qr_scan_mission,
+    # arena_search_mission, payload_drop_mission): node "camera" (the
+    # mission's _focus_camera sets /camera LensPosition per phase), BGR888,
+    # manual focus — this libcamera build cannot read the IMX708's PDAF data,
+    # so autofocus never focuses. Starts focused for the reference QR
+    # (cruise_altitude_m). camera_info is NOT remapped to /camera_info: an
+    # uncalibrated camera_ros publishes K = 0, which would overwrite
+    # qr_scanner_node's camera_fx (it sets the marker size looked for).
     down_camera = Node(
         package="camera_ros",
         executable="camera_node",
-        name="down_camera",
+        name="camera",
         output="screen",
         parameters=[{
             "camera": LaunchConfiguration("camera"),
             "width": 1280,
             "height": 720,
-            "format": "RGB888",
-            "role": "video",
+            "format": "BGR888",
+            "AfMode": 0,
+            "LensPosition": 1.0 / max(float(_yaml_value(mission_params, "cruise_altitude_m")),
+                                      0.1),
+            "AwbMode": ParameterValue(LaunchConfiguration("awb_mode"), value_type=int),
         }],
-        remappings=[
-            ("~/image_raw", "/down_frame"),
-            ("~/camera_info", "/camera_info"),
-        ],
+        remappings=[("/camera/image_raw", "/down_frame")],
         condition=IfCondition(LaunchConfiguration("launch_camera")),
     )
 
@@ -182,6 +201,7 @@ def generate_launch_description():
         fcu_url_arg,
         launch_camera_arg,
         camera_arg,
+        awb_mode_arg,
 
         mavros_launch,
         payload_node,

@@ -3,7 +3,7 @@
 #   ros2 launch mission_bringup arena_search_mission.launch.py           (drone)
 #   ros2 launch mission_bringup arena_search_mission.launch.py sim:=true (SITL)
 #
-# take off -> 10 m -> BCD sweep of the test arena, never over red (stop,
+# take off -> 9 m -> BCD sweep of the test arena, never over red (stop,
 # confirm, re-plan around it), matching every QR against the stored
 # reference -> over the match: hover, land there (arena_search_mission.py).
 #
@@ -31,12 +31,18 @@
 #                   +-0.77 m along the nose, at 3 m +-1.15 m
 #   speed           sweep speed (m/s)                        [arena_sweep_speed_ms]
 #   hover           hover over the match before landing (s)
+#   drop            true = PHASES 3 + 4: on the match, the mission's payload
+#                   drop (down to drop_altitude_m, camera-centred, release,
+#                   back up) instead of the hover, then land there.
+#                   Starts payload_node
 #   use_config      true = fly arena_corners_lat/lon from mission_params.yaml
 #   reference_file  the reference QR (phase 1 stores it there); sim: made
 #                   from sim_reference_text when left empty. Not loaded
 #                   with scan_ref:=true (read in this flight).
 #   rc_switch       true = wait for the RC CH7 switch to start
 #   cam_yaw         Cam3 image-top direction vs the nose, deg clockwise
+#   cam_mirror    true (default, as the Cam3 is mounted) = its image is mirrored
+#                 left-right vs the real scene; the nodes flip it back
 #   lens_pos        Cam3 manual focus at start-up, dioptres = 1 / distance (m).
 #                   In flight the mission sets it per phase: 1/ref_alt for the
 #                   reference QR, 1/alt for the sweep (3 m -> 0.33, 2 m -> 0.5).
@@ -50,6 +56,9 @@
 #                   y offset..offset+length and x -width/2..width/2, or
 #                   x 0..width with start:=corner — the default sim_qr_codes
 #                   are laid out for start:=corner); fcu_url defaults to SITL's
+#   sim_camera      sim: true (default) = sim_down_camera_node renders the
+#                   down camera; false = another source publishes /down_frame
+#                   (e.g. a Gazebo camera through ros_gz_bridge)
 #   sim_reference_text  the QR text the SITL reference is made from ("" = a
 #                   QR holding no information; matched by picture)
 #   red_ignore      image areas red_zone_node never counts as red (the
@@ -106,6 +115,7 @@ def _scanner(context, *args, **kwargs):
         output="screen",
         parameters=[{
             "cam_yaw_offset_deg": _float("cam_yaw"),
+            "cam_mirror": ParameterValue(LaunchConfiguration("cam_mirror"), value_type=bool),
             "delivery_altitude": _float("alt"),
             "reference_file": ref,
         }],
@@ -127,16 +137,18 @@ def generate_launch_description():
         DeclareLaunchArgument("scan_ref", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("start", default_value="centre", choices=["centre", "corner"]),
         DeclareLaunchArgument("red_ignore", default_value=""),
-        DeclareLaunchArgument("alt", default_value="10.0"),
+        DeclareLaunchArgument("alt", default_value="9.0"),
         DeclareLaunchArgument("ref_alt", default_value=""),
         DeclareLaunchArgument("speed", default_value="0.5"),
         DeclareLaunchArgument("hover", default_value="5.0"),
+        DeclareLaunchArgument("drop", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("use_config", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument(
             "reference_file", default_value=PythonExpression(
                 ["'' if '", sim, "' == 'true' else '~/aerothon_captures/reference_qr.json'"])),
         DeclareLaunchArgument("rc_switch", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("cam_yaw", default_value="0.0"),
+        DeclareLaunchArgument("cam_mirror", default_value="true", choices=["true", "false"]),
         DeclareLaunchArgument("awb_mode", default_value="5"),
         # Manual focus: this libcamera build cannot read the IMX708's PDAF
         # data ("PDAF data in unsupported format"), so autofocus never
@@ -146,6 +158,7 @@ def generate_launch_description():
         DeclareLaunchArgument("sim_qr_codes", default_value=SIM_QR_CODES),
         DeclareLaunchArgument("sim_red_zones", default_value=SIM_RED_ZONES),
         DeclareLaunchArgument("sim_reference_text", default_value=""),
+        DeclareLaunchArgument("sim_camera", default_value="true", choices=["true", "false"]),
         DeclareLaunchArgument("live_view", default_value="true", choices=["true", "false"]),
         DeclareLaunchArgument("live_view_port", default_value="8080"),
     ]
@@ -179,9 +192,11 @@ def generate_launch_description():
         executable="sim_down_camera_node",
         name="sim_down_camera",
         output="screen",
-        condition=IfCondition(sim),
+        condition=IfCondition(PythonExpression(
+            ["'", sim, "' == 'true' and '", LaunchConfiguration("sim_camera"), "' == 'true'"])),
         parameters=[{
             "mount_yaw_deg": _float("cam_yaw"),
+            "mirror": ParameterValue(LaunchConfiguration("cam_mirror"), value_type=bool),
             "marker_size_m": 1.0,
             "red_zones": ParameterValue(LaunchConfiguration("sim_red_zones"), value_type=str),
             "qr_codes": ParameterValue(LaunchConfiguration("sim_qr_codes"), value_type=str),
@@ -195,6 +210,7 @@ def generate_launch_description():
         output="screen",
         # red confirmed in flight (no hover), and red joined to it added
         parameters=[{"source": "topic", "mount_yaw_deg": _float("cam_yaw"),
+                     "cam_mirror": ParameterValue(LaunchConfiguration("cam_mirror"), value_type=bool),
                      "grow_known_zones": True, "confirm_in_flight": True,
                      "ignore_regions": ParameterValue(LaunchConfiguration("red_ignore"),
                                                       value_type=str)}],
@@ -211,6 +227,7 @@ def generate_launch_description():
             "arena_test_use_config": ParameterValue(LaunchConfiguration("use_config"),
                                                     value_type=bool),
             "arena_test_hover_s": _float("hover"),
+            "arena_test_drop": ParameterValue(LaunchConfiguration("drop"), value_type=bool),
             "arena_test_offset_m": _float("offset"),
             "arena_test_start": LaunchConfiguration("start"),
             "arena_test_scan_reference": ParameterValue(LaunchConfiguration("scan_ref"),
@@ -232,6 +249,15 @@ def generate_launch_description():
                  _yaml_value(mission_params, "battery_critical_v")]),
                 value_type=float),
         }],
+    )
+
+    payload = Node(
+        package="payload",
+        executable="payload_node",
+        name="payload_node",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("drop")),
+        parameters=[mission_params],
     )
 
     live_view = Node(
@@ -260,7 +286,7 @@ def generate_launch_description():
         # Camera + perception once MAVROS is up (the sim camera and
         # red_zone_node take their origin from the first GPS fix: vehicle on
         # the takeoff point).
-        TimerAction(period=3.0, actions=[camera, sim_camera, red_zone, live_view,
+        TimerAction(period=3.0, actions=[camera, sim_camera, red_zone, live_view, payload,
                                          OpaqueFunction(function=_scanner)]),
         TimerAction(period=6.0, actions=[mission]),
     ])

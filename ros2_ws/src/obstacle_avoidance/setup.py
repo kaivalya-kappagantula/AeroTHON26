@@ -42,6 +42,8 @@ setup(
             'corridor_perception_node = obstacle_avoidance.corridor_perception_node:main',
             'banner_node = obstacle_avoidance.banner_node:main',
             'sitl_corridor_sim = obstacle_avoidance.sitl_corridor_sim:main',
+            'sim_depth_dropout = obstacle_avoidance.sim_depth_dropout:main',
+            'oa_eval_node = obstacle_avoidance.oa_eval_node:main',
         ],
     },
 )

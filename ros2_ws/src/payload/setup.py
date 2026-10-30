@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer='jaya9899',
     maintainer_email='jaya9899@todo.todo',
-    description='Payload release servo (/payload/release) via MAV_CMD_DO_SET_SERVO.',
+    description='Payload winch (/payload/release) via MAV_CMD_DO_SET_SERVO.',
     license='TODO: License declaration',
     entry_points={
         'console_scripts': [

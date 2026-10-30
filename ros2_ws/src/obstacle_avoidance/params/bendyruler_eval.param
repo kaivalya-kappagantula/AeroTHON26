@@ -1,0 +1,36 @@
+# bendyruler_eval.param — EVALUATION ONLY: ArduPilot BendyRuler flying the
+# corridors (docs/OA_EVALUATION.md). The mission still uses
+# stage5_6_corridor.param (OA off, path_planner flies the corridors) until
+# the evaluation shows BendyRuler is better. Do not fly the mission on this.
+#
+# Starting point for tuning, not a result. Test 3/4 tuning order: shrink
+# OA_MARGIN_MAX, shorten OA_BR_LOOKAHEAD, lower WP_SPD; re-test after each.
+# scripts/oa_eval.sh --set NAME=VALUE overrides any line for one batch.
+#
+# Geometry it has to fit: 3.5 m corridor, 1.2 m obstacle in the middle ->
+# 1.15 m gaps. BendyRuler only takes a bearing whose margin (distance from the
+# probe path to an object's edge) exceeds OA_MARGIN_MAX on both sides, so in
+# the middle of a 1.15 m gap the best it can get is ~0.575 m minus the object
+# radius the database gives a reading (~dist x tan(OA_DB_BEAM_WIDTH/2)).
+# Above ~0.5 every gap looks closed. Physical air to the props =
+# OA_MARGIN_MAX - drone half width (0.275 m at 0.55 m tip to tip).
+#
+# REBOOT after loading (PRX1_TYPE, OA_TYPE). oa_eval.sh starts SITL with it.
+PRX1_TYPE        2
+OA_TYPE          1
+OA_BR_TYPE       1
+OA_MARGIN_MAX    0.45
+OA_BR_LOOKAHEAD  3
+# OA database: every OBSTACLE_DISTANCE bin becomes an object; keep only what
+# the scan reports (range_max_report_m 6.0 in avoidance.yaml).
+OA_DB_DIST_MAX   6
+OA_DB_EXPIRE     10
+# GUIDED position targets must go through the OA-aware waypoint navigator
+# (bit 6). Speed is then WP_SPD (m/s), not DO_CHANGE_SPEED.
+GUID_OPTIONS     64
+WP_SPD           0.5
+# Same pilot-takeover protection and failsafe as stage5_6_corridor.param.
+AVOID_ENABLE     7
+AVOID_MARGIN     0.4
+AVOID_BEHAVE     1
+FS_GCS_ENABLE    5

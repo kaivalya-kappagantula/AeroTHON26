@@ -45,11 +45,15 @@
 #      corridor's walls are only in view from about there (the camera sees
 #      ~36 deg to each side: walls 1.75 m out appear 2.4 m ahead), so the
 #      vehicle cannot simply fly at the banner from an angle.
-#   5. line up: the walls give the corridor's direction and centre; they must
-#      be the walls UNDER the banner (banner middle between them,
-#      match_frames in a row) — not the neighbouring corridor.
-#   6. through: corridor_follow with the measured altitude, ending where the
-#      walls are seen to end (no configured length).
+#   5. line up: the corridor's line is the banner fix in GPS terms (its
+#      middle, straight back from it). Walls seen there correct it
+#      (corridor_follow.GpsCorridorTrack, gated against the fix — the
+#      neighbouring corridor's walls are rejected) but are not required: on
+#      the drone the OAK-D rarely saw both walls of the 11.5 ft corridor, and
+#      the old "walls under the banner" check stalled the approach.
+#   6. through: corridor_follow on that GPS line, corrected by the walls,
+#      at the measured altitude, ending where the walls are seen to end or
+#      at the nominal length.
 
 import math
 import statistics
@@ -85,7 +89,8 @@ class EntryParams:
                                        # (3 m: an 11.5 ft corridor's walls are
                                        # at the edge of the 5 m depth range)
     min_altitude_m: float = 0.5        # floor on the computed altitude
-    match_frames: int = 3              # walls confirmed to be under the banner
+    lineup_settle_s: float = 2.0       # at the line-up point before going in
+                                       # (walls seen meanwhile correct the line)
     max_backoff_m: float = 3.0
     approach_timeout_s: float = 90.0
     research_after_s: float = 5.0      # banner lost this long before it is

@@ -12,6 +12,7 @@ its parameters is meaningless.
 | `stage1_proximity.param` | 1 | MAVLink proximity input only (display, not action) |
 | `stage2_simple_avoidance.param` | 2 | + simple avoidance (Loiter/AltHold test instrument) |
 | `stage5_6_corridor.param` | 5, 6 | OA off, `GUID_OPTIONS 0`, simple avoidance for pilot takeover, GCS failsafe = Land |
+| `bendyruler_eval.param` | evaluation only | BendyRuler on (`OA_TYPE 1`, `GUID_OPTIONS 64`, `WP_SPD`) — for `docs/OA_EVALUATION.md`, NOT the mission |
 
 ## Loading
 

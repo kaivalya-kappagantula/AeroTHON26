@@ -43,9 +43,10 @@
 #
 # Aborts are the mission's (_tick: RC switch, FC mode, battery, obstacle
 # sensor): MissionAbort propagates. Failures that leave the drone unsafe to
-# continue (red detector silent, speed rejected, arrival timeout) raise
-# MissionAbort("failure") -> the mission lands in place, which is never over
-# red: the drone only ever stops short of a zone.
+# continue (speed rejected, arrival timeout) raise MissionAbort("failure")
+# -> the mission lands in place, which is never over red: the drone only ever
+# stops short of a zone. Red detector dead (after the hold) raises
+# MissionAbort("sensor") -> RTL (LAND if RTL does not engage).
 
 import json
 import math
@@ -58,6 +59,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPo
 
 from mission_common import mavros_utils as mav
 from mission_common import srv_helpers as srv
+from mission_manager.reference_qr import wait_stopped
 from path_planner.arena_frame import M_PER_DEG_LAT, best_sweep, strip_width_for
 from path_planner.sweep_replan import (clip_segments, cut_at_progress, escape_point,
                                        exits_cleanly, plan_hops, polygon, routing_space,
@@ -66,7 +68,7 @@ from path_planner.sweep_replan import (clip_segments, cut_at_progress, escape_po
 SRV_RED_ZONE_CONFIRM = "/red_zone/confirm"
 
 # As bcd_redzone_mission.py (proven at 2 m; the camera sees far more ahead at
-# 10 m, so they are only safer here)
+# 9 m, so they are only safer here)
 CONFIRM_WINDOW_S = 4.0       # = red_zone_node window_s
 BRAKE_SETTLE_S = 1.5
 DETECTOR_TIMEOUT_S = 0.5     # /red_zone/sighting older than this = blind
@@ -309,7 +311,7 @@ class ArenaSearch:
         if reason == "blind":
             self._log().warn(f"[arena] red camera silent — holding up to {BLIND_HOLD_S:.0f} s")
             if not self._wait_detector(BLIND_HOLD_S):
-                raise self.node.abort_type("failure", "arena: red-zone camera silent")
+                raise self.node.abort_type("sensor", "arena: red-zone camera silent")
             self.node._sleep(0.5)       # let fresh frames report what is ahead
             if self._new_sighting():
                 reason = "sighting"
@@ -432,11 +434,19 @@ class ArenaSearch:
         best = self._match
         for i in range(int(self.cfg.arena_match_passes)):
             goal = self.frame.from_gps(*best)
-            r = self._fly_route(self._here(), goal, "over the matching QR")
+            # from just outside the margin, as the sweep plans: braked next to
+            # a zone the drone may sit a few cm inside it, and a route planned
+            # from in there finds no way at all ("unreachable" in SITL)
+            here = self._here()
+            start = escape_point(here, self._space(here, goal))
+            r = ("unreachable" if start is None
+                 else self._fly_route(start, goal, "over the matching QR"))
             if r == "unreachable":
                 self._log().warn("[arena] matching QR unreachable around the red zones")
                 break
-            self.node._sleep(BRAKE_SETTLE_S)
+            # look only once stopped, as phase 1 does: a moving, tilted camera
+            # puts the QR in the wrong place
+            wait_stopped(self.node, self.cfg, f"[arena] pass {i + 1}")
             self._match = None
             if not self._start_scan():
                 break
@@ -485,8 +495,17 @@ class ArenaSearch:
         # bcd_redzone_mission.py does — not a parameter.
         mav.request_message_intervals(node, (30, 33), rate_hz=20.0)
         if not self._wait_detector(10.0):
-            raise node.abort_type("failure", "arena: red_zone_node not reporting on "
+            raise node.abort_type("sensor", "arena: red_zone_node not reporting on "
                                              "/red_zone/sighting — not flying blind")
+
+    def clear_of_red(self, lat, lon):
+        """May the drone go to (lat, lon)? Outside every red zone's margin and
+        inside the routing space (phase 4's centring moves). No arena planned
+        yet -> True."""
+        if self.frame is None:
+            return True
+        p = self.frame.from_gps(lat, lon)
+        return self._space(p).covers(Point(p))
 
     def go_to(self, lat, lon, label):
         """Fly to (lat, lon) at arena_alt_m around the known red zones, the red
@@ -506,8 +525,10 @@ class ArenaSearch:
             self._log().warn(f"[arena] {label}: no route around the red zones")
         return r == "arrived"
 
-    def run(self, corners=None):
-        """Phase 3. Returns the matching QR's (lat, lon), or None."""
+    def run(self, corners=None, until=None):
+        """Phase 3. Returns the matching QR's (lat, lon), or None.
+        until: time.time() by which the sweep must end (the mission clock);
+        lawnmower_timeout_s applies too."""
         cfg, node = self.cfg, self.node
         self.zones, self.stops, self._match, self._rescan = [], 0, None, False
         sweep, ahead_m = self._setup(corners)
@@ -528,7 +549,10 @@ class ArenaSearch:
                              f"({repr(ref.get('text')) if ref.get('text') else 'picture only'}, "
                              f"stored {ref.get('time')})")
         deadline = time.time() + float(cfg.lawnmower_timeout_s)
+        if until is not None:
+            deadline = min(deadline, until)
 
+        node._focus_camera(self.alt)        # fixed focus (no autofocus on the Cam3)
         self._start_flying()
         target = node.sm.mission_target_qr
         if target:

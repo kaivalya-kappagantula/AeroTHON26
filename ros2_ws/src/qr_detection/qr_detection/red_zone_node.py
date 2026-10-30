@@ -118,6 +118,7 @@ class RedZoneNode(Node):
         self.fps = int(gp("fps", 30))
         self.lens = float(gp("lens_position", 0.1))
         self.mount_yaw = float(gp("mount_yaw_deg", 0.0))
+        self.cam_mirror = bool(gp("cam_mirror", False))           # image mirrored left-right
         self.window_s = float(gp("window_s", 4.0))
         self.min_hit_ratio = float(gp("min_hit_ratio", 0.5))
         self.min_red_m2 = float(gp("sighting_min_area_m2", 0.02))
@@ -178,7 +179,7 @@ class RedZoneNode(Node):
         self.get_logger().info(
             f"[red_zone] source={self.source}"
             + (f" ({self.topic})" if self.source != "rpicam" else "")
-            + f", mount_yaw={self.mount_yaw:.0f} deg, window {self.window_s:.1f} s"
+            + f", mount_yaw={self.mount_yaw:.0f} deg, mirror={self.cam_mirror}, window {self.window_s:.1f} s"
             + (", growing known zones in flight" if self.grow_known else "")
             + (", confirming new red in flight" if self.map.confirm_in_flight else ""))
 
@@ -236,6 +237,8 @@ class RedZoneNode(Node):
                         self.get_logger().error("[red_zone] camera source ended")
                         return
                     continue
+                if self.cam_mirror:
+                    frame = cv2.flip(frame, 1)    # mirrored camera -> real left/right
                 if 0 < self.process_width < frame.shape[1]:
                     s = self.process_width / frame.shape[1]
                     frame = cv2.resize(frame, (self.process_width,

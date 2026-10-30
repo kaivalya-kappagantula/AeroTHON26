@@ -237,3 +237,62 @@ def test_find_obstacle_matches_the_fit():
     cg.find_obstacle(walls_only, x, y, h, P, fov)
     for k in ("obs_dist", "obs_left", "obs_right", "obs_top"):
         assert walls_only[k] == pytest.approx(r[k], nan_ok=True)
+
+
+# --- obstacles with no wall fit (11.5 ft corridor, walls out of view) --------
+
+def _unfitted(scene, pos, yaw=0.0, heading=0.0, width=3.5052):
+    z = render(scene, CAM, pos, yaw)
+    x, y, h = cg.level_points(z, CAM.fx, CAM.fy, CAM.cx, CAM.cy, 0.0)
+    left, right, upf = cg.view_limits(CAM.fx, CAM.fy, CAM.cx, CAM.cy, CAM.width)
+    out = dict(walls=0, heading_err=float("nan"), wall_left=float("nan"),
+               wall_right=float("nan"), walls_end=float("nan"), obs_dist=float("nan"),
+               obs_left=float("nan"), obs_right=float("nan"), obs_top=float("nan"))
+    cg.find_obstacle_unfitted(out, x, y, h, P, width, heading, (left, right, upf),
+                              height_above_ground=pos[2])
+    return out
+
+
+def test_unfitted_finds_a_box_ahead_without_walls():
+    # Walls give no depth (white): only the box is in the image.
+    box = (3.0, 3.4, -0.6, 0.6, 1.83)
+    r = _unfitted(Scene(width=3.5052, x_start=100.0, x_end=101.0, boxes=[box]),
+                  (0.0, 0.2, 1.2))
+    assert r["walls"] == 0
+    assert r["obs_dist"] == pytest.approx(3.0, abs=0.1)
+    assert r["obs_left"] == pytest.approx(0.6 - 0.2, abs=0.08)
+    assert r["obs_right"] == pytest.approx(-0.6 - 0.2, abs=0.08)
+
+
+def test_unfitted_box_against_a_wall_never_shows_a_passable_gap_on_that_side():
+    # Box 0.4 m from the left wall; the band clips its left edge, but the
+    # gap that clipping implies stays below drone width + 2 x clearance.
+    half = 3.5052 / 2
+    box = (2.5, 2.9, half - 0.4 - 1.07, half - 0.4, 1.83)
+    r = _unfitted(Scene(width=3.5052, x_start=100.0, x_end=101.0, boxes=[box]),
+                  (0.0, 0.0, 1.2))
+    assert r["obs_right"] == pytest.approx(box[2], abs=0.08)
+    assert half - r["obs_left"] < 0.6294 + 2 * 0.10
+
+
+def test_unfitted_ignores_walls_seen_edge_on():
+    # Walls in view with full depth, no box: nothing is reported as an obstacle
+    # (vehicle 0.3 m off centre, nose 5 deg off the corridor).
+    r = _unfitted(Scene(width=3.5052, x_start=-2.0, x_end=6.7), (0.0, 0.3, 1.2),
+                  yaw=math.radians(5.0), heading=-math.radians(5.0))
+    assert math.isnan(r["obs_dist"])
+
+
+def test_single_wall_fits_with_the_width_prior():
+    # 11.5 ft corridor, only the right wall within depth range: with the
+    # known width one wall places the centre.
+    sc = Scene(width=3.5052, x_start=-2.0, x_end=6.7)
+    z = render(sc, CAM, (0.0, 0.5, 1.2), 0.0)
+    x, y, h = cg.level_points(z, CAM.fx, CAM.fy, CAM.cx, CAM.cy, 0.0)
+    keep = y < 0.0                                 # left wall gives no depth
+    p = cg.CorridorParams(max_single_offset_m=1.5)
+    r = cg.fit_corridor(x[keep], y[keep], h[keep], p, height_above_ground=1.2)
+    assert r["walls"] == 0                         # no width known: no fit
+    r = cg.fit_corridor(x[keep], y[keep], h[keep], p, height_above_ground=1.2, width=3.5052)
+    assert r["walls"] == 1
+    assert 0.5 * (r["wall_left"] + r["wall_right"]) == pytest.approx(-0.5, abs=0.08)

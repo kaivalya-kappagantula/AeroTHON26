@@ -63,6 +63,36 @@ def test_flat_banner_detected_and_locked():
     assert y + bh == pytest.approx(120, abs=3)            # bottom edge
 
 
+def blue_params():
+    """banner_blue.yaml's values on top of the defaults."""
+    return BannerParams(h_min=100, h_max=130, s_min=80, a_min=0, b_min=15, allow_top=False)
+
+
+def test_blue_banner_found_by_the_blue_detector_only():
+    img = frame()
+    img[150:200, 120:520] = (170, 90, 30)               # blue cloth (BGR)
+    blue, green = Detector(blue_params()), Detector(BannerParams())
+    assert len(blue.detect(img)[0]) == 1
+    assert green.detect(img)[0] == []
+    green_img = with_banner(frame(), 120, 150, 520, 200)
+    assert blue.detect(green_img)[0] == []
+
+
+def test_blue_sky_on_the_top_edge_is_not_acquired():
+    img = frame()
+    img[0:90, :] = (230, 160, 90)                       # clear blue sky, top of the view
+    tr = Tracker(blue_params())
+    det = Detector(blue_params())
+    for _ in range(5):
+        out = tr.update(det.detect(img)[0], W, H)
+    assert out is None
+    img[180:230, 120:520] = (170, 90, 30)               # the banner below it is
+    for _ in range(5):
+        out = tr.update(det.detect(img)[0], W, H)
+    assert out is not None and out["state"] == "LOCK"
+    assert 180 <= out["cy"] <= 230
+
+
 def test_foliage_rejected():
     p = BannerParams()
     cands, rejected, _ = Detector(p).detect(with_foliage(frame(), 320, 180, 60))

@@ -15,6 +15,8 @@
 #   heading         compass heading held in the sweep (deg; 0 = North puts the
 #                   camera's wide axis along the strips when cam_yaw is 0)
 #   cam_yaw         Cam3 image-top direction vs the nose, deg clockwise (0 = aligned)
+#   cam_mirror    true (default, as the Cam3 is mounted) = its image is mirrored
+#                 left-right vs the real scene; the nodes flip it back
 #   awb_mode        Cam3 white balance (5 = daylight, 0 = auto)
 #   sim             true = SITL: sim_down_camera_node renders sim_zones instead
 #                   of camera_ros; fcu_url defaults to SITL's
@@ -53,6 +55,7 @@ def generate_launch_description():
         DeclareLaunchArgument("margin", default_value="1.0"),
         DeclareLaunchArgument("heading", default_value="0.0"),
         DeclareLaunchArgument("cam_yaw", default_value="0.0"),
+        DeclareLaunchArgument("cam_mirror", default_value="true", choices=["true", "false"]),
         DeclareLaunchArgument("awb_mode", default_value="5"),
         DeclareLaunchArgument("sim_zones", default_value="[]"),
     ]
@@ -87,6 +90,7 @@ def generate_launch_description():
         condition=IfCondition(sim),
         parameters=[{
             "mount_yaw_deg": _float("cam_yaw"),
+            "mirror": ParameterValue(LaunchConfiguration("cam_mirror"), value_type=bool),
             "red_zones": ParameterValue(LaunchConfiguration("sim_zones"), value_type=str),
         }],
     )
@@ -96,7 +100,8 @@ def generate_launch_description():
         executable="red_zone_node",
         name="red_zone_node",
         output="screen",
-        parameters=[{"source": "topic", "mount_yaw_deg": _float("cam_yaw")}],
+        parameters=[{"source": "topic", "mount_yaw_deg": _float("cam_yaw"),
+                     "cam_mirror": ParameterValue(LaunchConfiguration("cam_mirror"), value_type=bool)}],
     )
 
     mission = Node(
