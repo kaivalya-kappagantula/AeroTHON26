@@ -25,7 +25,7 @@ from shapely.geometry import LineString, Polygon
 ARENA_WIDTH_M   = 40.0
 ARENA_HEIGHT_M  = 30.0
 ALTITUDE_M      = 5.0
-HFOV_DEG        = 66.0       # RPi Camera Module 3 (downward); Wide = 102
+HFOV_DEG        = 53.5       # RPi Camera Module 1.3 (downward); Module 3 = 66, Wide = 102
 OVERLAP         = 0.20       # fraction of footprint shared by adjacent strips
 ARENA_SPEED_MS  = 1.5
 ARENA_EDGE_MARGIN_M = 1.0    # keep waypoints off the arena (fence) boundary

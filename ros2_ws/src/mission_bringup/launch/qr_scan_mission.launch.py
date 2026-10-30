@@ -108,6 +108,9 @@ def generate_launch_description():
             "width": 1280,
             "height": 720,
             "format": "BGR888",
+            # Camera Module 1.3: its full-width binned mode (else libcamera may
+            # pick the cropped 1080p one, ~41 deg). Remove for a Camera Module 3.
+            "sensor_mode": "1296:972",
             "AfMode": ParameterValue(LaunchConfiguration("af_mode"), value_type=int),
             # fixed focus for alt from the start (the mission sets it again)
             "LensPosition": ParameterValue(PythonExpression(

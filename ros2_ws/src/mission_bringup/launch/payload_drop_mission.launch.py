@@ -32,8 +32,8 @@
 #   live_view       true = live_view_node streams the down camera to
 #                   http://<drone>:live_view_port/
 #
-# FC: payload_node drives SERVO<release_channel> with DO_SET_SERVO — see
-# payload_node.py for the SERVOn_FUNCTION / TRIM setup. Check the mechanism
+# FC: payload_node drives the winch on RELAY1/RELAY2 with DO_SET_RELAY — see
+# payload_node.py for the RELAYn_* / SERVOn_FUNCTION setup. Check the mechanism
 # on the bench (ros2 service call /payload/release std_srvs/srv/Trigger)
 # before flying it.
 #
@@ -107,6 +107,9 @@ def generate_launch_description():
             "width": 1280,
             "height": 720,
             "format": "BGR888",
+            # Camera Module 1.3: its full-width binned mode (else libcamera may
+            # pick the cropped 1080p one, ~41 deg). Remove for a Camera Module 3.
+            "sensor_mode": "1296:972",
             "AfMode": ParameterValue(LaunchConfiguration("af_mode"), value_type=int),
             "LensPosition": _float("lens_pos"),
             "AwbMode": ParameterValue(LaunchConfiguration("awb_mode"), value_type=int),

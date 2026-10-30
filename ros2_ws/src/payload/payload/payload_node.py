@@ -1,35 +1,40 @@
 # payload_node.py — ROS2 node for the payload winch (thread on a spool)
 #
-# The payload (~100 g) hangs on a thread wound on a motor-driven spool. It is
-# heavy enough to unwind the spool by itself, so the motor is kept spinning
-# (reeling in, at full speed) for the whole flight to hold it up:
+# The payload (~100 g) hangs on a 5 m thread wound on a motor-driven spool.
+# It is heavy enough to unwind the spool by itself, so the motor is kept
+# reeling in (full speed) for the whole flight to hold it up:
 #
-#   node start          -> winch_pwm_spin (retried until MAVROS accepts it)
-#   /payload/release    -> winch_pwm_stop: the motor lets go, gravity unwinds
-#                          the thread and the payload drops, for winch_unwind_s
-#                       -> winch_pwm_spin again: pull the thread back in,
-#                          winch_reel_wait_s before the reply (drone holds)
-#   landed              -> winch_pwm_stop: disarmed after flying (above
-#                          FLEW_ALT_M while armed), whoever landed it
-#                          (mission, FC failsafe, pilot). Armed again -> spin.
+#   node start          -> IN (retried until MAVROS accepts it)
+#   /payload/release    -> OUT: lower the payload on the thread for
+#                          winch_unwind_s (time it for ~4.7 m of the 5 m:
+#                          too long and the spool runs off the end and winds
+#                          the thread back on the other way)
+#                       -> IN at once: the jerk throws the payload off its
+#                          hook; winch_jerks > 1 repeats OUT winch_jerk_s / IN
+#                       -> stays IN: reels the thread up, until landing
+#   landed              -> OFF: disarmed after flying (above FLEW_ALT_M while
+#                          armed), whoever landed it (mission, FC failsafe,
+#                          pilot). Armed again -> IN.
 #
-# Hardware interface:
-#   MAVLink MAV_CMD_DO_SET_SERVO via MAVROS /mavros/cmd/command.
+# Hardware interface: the motor driver's two direction inputs are on FC
+# relays (on/off, so no speed setting: on = full speed), switched with
+# MAV_CMD_DO_SET_RELAY via MAVROS /mavros/cmd/command. Relay numbers are the
+# command's, 0-based: 0 = RELAY1, 1 = RELAY2.
+#   IN  = winch_relay_in ON,  winch_relay_out OFF   (reel up / hold)
+#   OUT = winch_relay_out ON, winch_relay_in OFF    (lower)
+#   OFF = both OFF (never both ON)
+# Spins the wrong way on the bench -> swap winch_relay_in / winch_relay_out.
 #
 # FC setup (do this in Mission Planner, the node cannot do it for you):
-#   SERVO<release_channel>_FUNCTION = 0   (DO_SET_SERVO is ignored on an
-#                                          output assigned to any function)
-#   SERVO<release_channel>_TRIM     = winch_pwm_stop. The FC outputs trim on
-#                                     unassigned channels from boot, so the
-#                                     motor is still until this node starts.
-#   Check that output <release_channel> physically exists on the Pixhawk 6C
-#   Mini, or move release_channel to an output that does.
-# Bench check: winch_pwm_spin must REEL IN (wrong way -> the other end of the
-# PWM range), winch_pwm_stop must leave the spool free to turn.
+#   RELAY1_PIN 50, RELAY2_PIN 51 (AUX1 / AUX2 = SERVO9 / SERVO10)
+#   SERVO9_FUNCTION, SERVO10_FUNCTION = -1 (GPIO), or the pins stay PWM outputs
+#   RELAY1_FUNCTION, RELAY2_FUNCTION = 1 (Relay); DO_SET_RELAY is ignored
+#                                       otherwise (ArduPilot 4.5+)
+#   RELAY1_DEFAULT, RELAY2_DEFAULT = 0 (off at boot: motor still until this
+#                                       node starts)
 #
 # Usage:
 #   ros2 run payload payload_node
-#   ros2 run payload payload_node --ros-args -p release_channel:=10
 
 import threading
 import time
@@ -46,7 +51,8 @@ from mavros_msgs.srv import CommandLong
 
 from mission_common.config_loader import load_mission_config
 
-MAV_CMD_DO_SET_SERVO = 183
+MAV_CMD_DO_SET_RELAY = 181
+IN, OUT, OFF = "IN", "OUT", "OFF"   # winch modes
 SPIN_RETRY_S = 2.0              # start-up spin command retried this often
 RETRY_FOR_S = 15.0              # reel-in / landing stop retried this long
 FLEW_ALT_M = 1.0                # armed above this = a flight; its disarm = landed
@@ -57,11 +63,11 @@ class PayloadNode(Node):
         super().__init__("payload_node")
         self.cfg = load_mission_config(self)
 
-        self.channel      = int(self.cfg.release_channel)
-        self.pwm_spin     = int(self.cfg.winch_pwm_spin)
-        self.pwm_stop     = int(self.cfg.winch_pwm_stop)
-        self.unwind_s     = float(self.cfg.winch_unwind_s)
-        self.reel_wait_s  = float(self.cfg.winch_reel_wait_s)
+        self.relay_in   = int(self.cfg.winch_relay_in)
+        self.relay_out  = int(self.cfg.winch_relay_out)
+        self.unwind_s   = float(self.cfg.winch_unwind_s)
+        self.jerks      = max(1, int(self.cfg.winch_jerks))
+        self.jerk_s     = float(self.cfg.winch_jerk_s)
 
         self.is_released = False
         self._lock = threading.Lock()   # one motor command sequence at a time
@@ -73,7 +79,7 @@ class PayloadNode(Node):
         # client's response can be processed by another executor thread while
         # the handler waits (no nested spinning).
         self._cb_group = ReentrantCallbackGroup()
-        self.servo_client = self.create_client(
+        self.cmd_client = self.create_client(
             CommandLong, "/mavros/cmd/command", callback_group=self._cb_group)
         self.create_service(Trigger, "/payload/release", self._handle_release,
                             callback_group=self._cb_group)
@@ -95,36 +101,61 @@ class PayloadNode(Node):
                                  callback_group=self._cb_group)
 
         self.get_logger().info(
-            f"[payload] Ready — /payload/release (ch={self.channel}, "
-            f"spin={self.pwm_spin}, stop={self.pwm_stop}, "
-            f"unwind {self.unwind_s:.1f} s)")
+            f"[payload] Ready — /payload/release (reel-in relay {self.relay_in}, "
+            f"out relay {self.relay_out}, unwind {self.unwind_s:.1f} s, "
+            f"{self.jerks} jerk(s))")
 
     # -----------------------------------------------------------------------
-    # Servo helper — sends MAVLink DO_SET_SERVO via MAVROS CommandLong
+    # Relay helper — sends MAVLink DO_SET_RELAY via MAVROS CommandLong
     # -----------------------------------------------------------------------
-    def _set_servo(self, channel: int, pwm: int, wait_s: float = 5.0) -> bool:
-        """param1 = servo output number, param2 = PWM (us)."""
-        if not self.servo_client.wait_for_service(timeout_sec=wait_s):
+    def _set_relay(self, relay: int, on: bool, wait_s: float = 5.0) -> bool:
+        """param1 = relay instance (0 = RELAY1), param2 = 1 on / 0 off."""
+        if not self.cmd_client.wait_for_service(timeout_sec=wait_s):
             self.get_logger().warn("[payload] /mavros/cmd/command not available yet",
                                    throttle_duration_sec=10.0)
             return False
 
         req = CommandLong.Request()
         req.broadcast = False
-        req.command = MAV_CMD_DO_SET_SERVO
-        req.param1 = float(channel)
-        req.param2 = float(pwm)
+        req.command = MAV_CMD_DO_SET_RELAY
+        req.param1 = float(relay)
+        req.param2 = 1.0 if on else 0.0
 
-        future = self.servo_client.call_async(req)
+        future = self.cmd_client.call_async(req)
         deadline = time.time() + 5.0
         while not future.done() and time.time() < deadline:
             time.sleep(0.05)
 
+        state = "ON" if on else "OFF"
         if future.done() and future.result() is not None and future.result().success:
-            self.get_logger().info(f"[payload] Servo ch={channel} set to PWM={pwm}")
+            self.get_logger().info(f"[payload] Relay {relay} {state}")
             return True
 
-        self.get_logger().error(f"[payload] Failed to set servo ch={channel} to PWM={pwm}")
+        self.get_logger().error(f"[payload] Failed to set relay {relay} {state}")
+        return False
+
+    def _apply(self, mode: str) -> bool:
+        """One attempt at IN, OUT or OFF. The relay being switched off goes
+        first, so both are never on together."""
+        if mode == IN:
+            ok = (self._set_relay(self.relay_out, False)
+                  and self._set_relay(self.relay_in, True))
+        elif mode == OUT:
+            ok = (self._set_relay(self.relay_in, False)
+                  and self._set_relay(self.relay_out, True))
+        else:
+            ok = (self._set_relay(self.relay_in, False)
+                  and self._set_relay(self.relay_out, False))
+        if ok:
+            self._winch_on = mode == IN
+        return ok
+
+    def _set_winch(self, mode: str) -> bool:
+        """_apply, retried for RETRY_FOR_S. Caller holds self._lock."""
+        deadline = time.time() + RETRY_FOR_S
+        while time.time() < deadline:
+            if self._apply(mode):
+                return True
         return False
 
     # -----------------------------------------------------------------------
@@ -136,22 +167,11 @@ class PayloadNode(Node):
         try:
             if self._spin_timer.is_canceled():
                 return
-            if self._set_servo(self.channel, self.pwm_spin):
+            if self._apply(IN):
                 self._spin_timer.cancel()
-                self._winch_on = True
                 self.get_logger().info("[payload] Winch spinning — holding the payload")
         finally:
             self._lock.release()
-
-    def _set_winch(self, on: bool) -> bool:
-        """Spin or stop, retried for RETRY_FOR_S. Caller holds self._lock."""
-        pwm = self.pwm_spin if on else self.pwm_stop
-        deadline = time.time() + RETRY_FOR_S
-        while time.time() < deadline:
-            if self._set_servo(self.channel, pwm):
-                self._winch_on = on
-                return True
-        return False
 
     # -----------------------------------------------------------------------
     # Landing: winch off once disarmed after a flight; on again when re-armed
@@ -169,16 +189,16 @@ class PayloadNode(Node):
             with self._lock:
                 if not self._winch_on and self._spin_timer.is_canceled():
                     self.get_logger().info("[payload] Armed — winch on")
-                    self._set_winch(True)
+                    self._set_winch(IN)
         elif self._flew:
             with self._lock:
                 self._spin_timer.cancel()   # landed before the start-up spin took
                 self.get_logger().info("[payload] Landed (disarmed) — winch off")
-                if not self._set_winch(False):
+                if not self._set_winch(OFF):
                     self.get_logger().error("[payload] Winch NOT stopped after landing")
 
     # -----------------------------------------------------------------------
-    # /payload/release — stop the winch, let the payload drop, reel back in
+    # /payload/release — lower the payload, jerk it off, reel the thread up
     # -----------------------------------------------------------------------
     def _handle_release(self, request, response):
         self.get_logger().info("[payload] RELEASE requested")
@@ -191,27 +211,33 @@ class PayloadNode(Node):
                 response.message = "Payload already released"
                 return response
 
-            if not self._set_servo(self.channel, self.pwm_stop):
-                # Retry the spin so the payload is not left unheld.
-                self._set_winch(True)
+            if not self._apply(OUT):
+                # Back to holding so the payload is not left unheld.
+                self._set_winch(IN)
                 response.success = False
-                response.message = "Failed to stop the winch"
+                response.message = "Failed to reverse the winch"
                 return response
 
-            self.get_logger().info(f"[payload] Winch off — unwinding {self.unwind_s:.1f} s")
-            self._winch_on = False
-            time.sleep(self.unwind_s)   # gravity unwinds the thread, payload drops
+            self.get_logger().info(f"[payload] Winch OUT — lowering {self.unwind_s:.1f} s")
+            time.sleep(self.unwind_s)
+
+            # The jerk: straight back to IN, no pause. Further jerks: a short
+            # OUT, then IN again.
+            for i in range(self.jerks):
+                if i > 0:
+                    self._apply(OUT)
+                    time.sleep(self.jerk_s)
+                self.get_logger().info(f"[payload] Jerk {i + 1}/{self.jerks} — winch IN")
+                self._apply(IN)
             self.is_released = True
 
-            # Reel the thread back in. Retried: a dangling thread on the way out
-            # is worse than a late reply.
-            reeling = self._set_winch(True)
-            if reeling:
-                time.sleep(self.reel_wait_s)
+            # Reel the thread up (stays IN until landing). Retried: a dangling
+            # thread on the way out is worse than a late reply.
+            reeling = self._winch_on or self._set_winch(IN)
 
         response.success = True
-        response.message = ("Payload released, thread reeled in" if reeling else
-                            "Payload released, winch NOT restarted (thread hanging)")
+        response.message = ("Payload jerked off, winch reeling in" if reeling else
+                            "Payload lowered, winch NOT reeling in (thread hanging)")
         self.get_logger().info(f"[payload] {response.message}")
         return response
 

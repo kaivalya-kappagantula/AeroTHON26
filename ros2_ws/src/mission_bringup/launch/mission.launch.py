@@ -143,6 +143,9 @@ def generate_launch_description():
             "width": 1280,
             "height": 720,
             "format": "BGR888",
+            # Camera Module 1.3: its full-width binned mode (else libcamera may
+            # pick the cropped 1080p one, ~41 deg). Remove for a Camera Module 3.
+            "sensor_mode": "1296:972",
             "AfMode": 0,
             "LensPosition": 1.0 / max(float(_yaml_value(mission_params, "cruise_altitude_m")),
                                       0.1),

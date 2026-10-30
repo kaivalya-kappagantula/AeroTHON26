@@ -59,7 +59,7 @@ test rigs differ from the competition, so nothing is assumed.
 | Pixhawk 6C Mini (ArduCopter) | Flight controller; the Pi talks to it over TELEM2 (`/dev/ttyAMA2:921600`) through **MAVROS** |
 | OAK-D Lite (forward) | Depth (walls, obstacles) + colour (green banner) |
 | RPi Camera Module 3 (downward) | QR codes and the red mat |
-| Payload winch | Motor spool on Pixhawk output 10 (`release_channel`): full speed (`winch_pwm_spin` 2000) from payload_node start to hold the 100 g payload, stopped (`winch_pwm_stop` 1500 = SERVO10_TRIM) to drop it and when it disarms after a flight (landed); re-armed → full speed again |
+| Payload winch | Motor spool, driver on FC relays RELAY1 (pin 50) / RELAY2 (pin 51), on/off = full speed: reels IN from payload_node start to hold the 100 g payload on its 5 m thread; at the drop OUT for `winch_unwind_s` (~4.7 m) then IN at once (the jerk throws it off), IN until landing; both off when it disarms after a flight |
 | RC transmitter CH7 | Mission start switch; flipping it LOW at any time hands control back to the pilot (LOITER) |
 
 ---
@@ -348,9 +348,9 @@ Shared by `mission_node`, `payload_drop_mission` and `arena_search_mission drop:
    `drop_center_tol_m` (0.3 m). No move when the QR seen is more than
    `drop_center_max_offset_m` (2 m) from the matched point (probably another QR) or when
    the move would enter a red zone's 2 m margin.
-4. **Release** after `drop_settle_s` (3 s): `/payload/release` → winch off for `winch_unwind_s`
-   (the thread unwinds under the payload's weight and it drops), then full speed again to reel
-   the thread in (`winch_reel_wait_s` held before climbing). If it couldn't
+4. **Release** after `drop_settle_s` (3 s): `/payload/release` → winch OUT for `winch_unwind_s`
+   (lowers the payload ~4.7 m on its 5 m thread), then straight back IN: the jerk throws it off
+   its hook. Reels in until landing. If it couldn't
    centre, or 5 m wasn't reached in `drop_arrival_timeout_s`, it **releases anyway** on
    GPS (a rough drop scores, carrying the payload home doesn't).
 5. **Straight back up** to 10 m (`arena_alt_m`), then phase 5.
@@ -533,12 +533,12 @@ was removed — `arena_search_mission` is the full QR-search test now.
 - **Corridor walls rarely in view** (real OAK-D, 11.5 ft corridor): the corridor is now
   flown on the GPS line, walls correct it. Check on the drone with the walk-through dry
   run before flying (`docs/CORRIDOR_HARDWARE_CHECK.md`).
-- **Payload winch does not stop (OPEN)**: on the bench the motor keeps spinning at
-  `winch_pwm_stop` (1500, a guess). Motor driver type unknown — find the real stop PWM on the
-  drone, set it in `winch_pwm_stop` and `SERVO10_TRIM`. Spin direction and `winch_unwind_s`
-  are also unconfirmed.
-- **Phase 4 on the drone**: check the winch on the bench first (spin reels in, stop frees the spool, time a full unwind for `winch_unwind_s`)
-  (`ros2 service call /payload/release std_srvs/srv/Trigger`), and the FC's
-  `SERVO10_FUNCTION = 0` / `SERVO10_TRIM` = `winch_pwm_stop` (see `payload_node.py`). Is the
+- **Payload winch on relays (bench-check)**: now switched with DO_SET_RELAY (RELAY1/2 on
+  pins 50/51), not a servo PWM. Time `winch_unwind_s` for ~4.7 m with the payload on (never the
+  full 5 m: the spool would wind the thread back on the other way), and check one IN jerk
+  throws the payload off (else `winch_jerks` 2–3).
+- **Phase 4 on the drone**: check the winch on the bench first
+  (`ros2 service call /payload/release std_srvs/srv/Trigger`), and the FC's relay setup
+  (RELAYn_PIN / FUNCTION / DEFAULT, SERVO9/10_FUNCTION -1; see `payload_node.py`). Is the
   1 m QR still found by `locate_qr` at 5 m with the real camera and focus?
 - **Later phases to define and rework**: corridor 2 (obstacles), homing.

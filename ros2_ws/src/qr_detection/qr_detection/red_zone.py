@@ -22,7 +22,7 @@
 # arrays are [north, east] like the original pipeline. The node publishes
 # lat/lon, so the mission never depends on this origin.
 #
-# NOT YET HARDWARE-VALIDATED: camera intrinsics are nominal (cam3_default),
+# NOT YET HARDWARE-VALIDATED: camera intrinsics are nominal (CameraModel.nominal),
 # mount_yaw_deg must match how the camera is bolted on, and the HSV floors
 # must be tuned against the real red markings at the venue.
 
@@ -179,6 +179,22 @@ class CameraModel:
                    fy=f_full * height / 2592.0,
                    cx=width / 2.0, cy=height / 2.0,
                    mount_yaw_deg=mount_yaw_deg)
+
+    @classmethod
+    def cam1_default(cls, width: int, height: int, mount_yaw_deg: float = 0.0):
+        """Nominal Camera Module 1.3 (OV5647): f = 3.6 mm, 1.4 um pixels, 2592
+        wide full res, run in its full-width 1296x972 binned mode (camera_ros
+        sensor_mode), so a 16:9 output is a vertical crop: square pixels."""
+        f = 3.6e-3 / 1.4e-6 * width / 2592.0       # ~1270 px at 1280 wide
+        return cls(width, height, fx=f, fy=f,
+                   cx=width / 2.0, cy=height / 2.0,
+                   mount_yaw_deg=mount_yaw_deg)
+
+    @classmethod
+    def nominal(cls, down_cam: str, width: int, height: int, mount_yaw_deg: float = 0.0):
+        """down_cam: 'cam1' (Camera Module 1.3) or 'cam3' (Camera Module 3)."""
+        make = {"cam1": cls.cam1_default, "cam3": cls.cam3_default}[down_cam]
+        return make(width, height, mount_yaw_deg)
 
     def project_to_ned(self, uv: np.ndarray, st: VehicleState) -> Optional[np.ndarray]:
         """Pixels (N,2) -> ground points (N,2) as [north, east].

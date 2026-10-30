@@ -97,7 +97,7 @@ class BcdRedZoneMission(Node):
         # ~0.6 m after the brake and came within 0.13 m of red (moving
         # North, 0.77 m lookahead); 0.5 m/s kept 0.96 m.
         self.speed = float(gp("speed_ms", 0.5))
-        self.hfov = float(gp("hfov_deg", 66.0))
+        self.hfov = float(gp("hfov_deg", 53.5))
         self.overlap = float(gp("overlap", 0.20))
         self.strip_width = float(gp("strip_width_m", 0.0))          # 0 = from camera
         self.edge_margin = float(gp("edge_margin_m", 0.0))

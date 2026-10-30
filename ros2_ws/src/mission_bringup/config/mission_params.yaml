@@ -24,8 +24,9 @@
 #   (FC-side RTL must clear the 2.44 m corridor walls)
 #   PRX1_TYPE 2, AVOID_* (obstacle_avoidance/params/stage5_6_corridor.param),
 #   OA_TYPE 0 and GUID_OPTIONS 0 (plain position control in GUIDED; the
-#   corridors are flown by path_planner, not BendyRuler), SERVO10_FUNCTION 0,
-#   SERVO10_TRIM = winch stop PWM. RC7 is NOT used: the mission starts on launch.
+#   corridors are flown by path_planner, not BendyRuler), payload winch on relays:
+#   RELAY1_PIN 50 / RELAY2_PIN 51, RELAY1/2_FUNCTION 1 (Relay), RELAY1/2_DEFAULT 0,
+#   SERVO9/10_FUNCTION -1 (GPIO). RC7 is NOT used: the mission starts on launch.
 
 # ─── Site survey (all nodes; mission_common/survey.py) ─────────────
 # [lat, lon]; [0.0, 0.0] = not measured. Corridor corners are named from the
@@ -62,9 +63,11 @@ mission_node:
   ros__parameters:
     # Altitudes (m above home). Hard cap 9.5 m everywhere (mavros_utils.MAX_ALT_M;
     # config_loader refuses a value above it):
-    #   takeoff + reference QR 5 m -> corridors 1.22 m (half the 8 ft walls,
-    #   never above 8 ft except the exit failsafe) -> arena 9.25 m -> drop
-    #   down to 5 m and back up to 9.25 m -> exit corridor 1.22 m -> home 5 m
+    #   takeoff + reference QR 5 m -> entry corridor flown OVER at 5 m (surveyed;
+    #   unsurveyed: through it at 1.22 m) to the midpoint of its exit corners
+    #   -> straight up to 9.25 m there, arena sweep from that spot -> drop
+    #   down to 5 m and back up to 9.25 m -> exit corridor 1.22 m (half the
+    #   8 ft walls, never above 8 ft except the exit failsafe) -> home 5 m
     drop_altitude_m: 5.0
     cruise_altitude_m: 5.0          # takeoff altitude
     # Speeds per phase (m/s):
@@ -131,7 +134,13 @@ mission_node:
     # the search point): straight down to this — the middle of the 8 ft
     # corridor walls.
     corridor_start_alt_m: 1.2192
-    # Phase 2 end: climb straight up to this once past the entry corridor.
+    # Phase 2, surveyed entry corridor: from the reference QR, over the
+    # corridor at cruise_altitude_m — to its mouth centre, then the midpoint
+    # of survey_entry_end_left / _right — nose down the corridor.
+    entry_overfly_speed_ms: 0.7
+    entry_overfly_tolerance_m: 0.7      # GPS noise ~1 m
+    # Phase 2 end: climb straight up to this there; the arena sweep starts
+    # from that spot (strip nearest it first).
     post_entry_alt_m: 9.25          # arena altitude (9-9.5 m, cap 9.5)
     # Phase 3, arena search (mission_manager/arena_search.py). COMPETITION
     # DAY: the arena's 4 GPS corners, in order around it. All zero = use
@@ -184,7 +193,7 @@ mission_node:
     drop_center_tol_m: 0.3            # this close = centred, no move
     drop_center_passes: 3             # locate -> move, repeated
     drop_center_max_offset_m: 2.0     # QR further from the match = another QR: no move
-    drop_release_timeout_s: 60.0      # > payload_node winch_unwind_s + winch_reel_wait_s + ~20
+    drop_release_timeout_s: 60.0      # > payload_node winch_unwind_s + jerks + ~30 (retries)
     # Battery (4S under load). Companion only stops the mission; the FC acts.
     battery_critical_v: 13.6
     # Obstacle sensor health (obstacle_avoidance coverage_guard)
@@ -203,8 +212,9 @@ path_planner_node:
     arena_speed_ms: 1.5
     origin_lat: 12.9716
     origin_lon: 77.5946
-    # Downward RPi Camera Module 3: 66 deg standard, 102 deg Wide
-    down_cam_hfov_deg: 66.0
+    # Downward camera: Camera Module 1.3 53.5 deg (full-width sensor_mode
+    # 1296:972); Camera Module 3 66 deg standard, 102 deg Wide
+    down_cam_hfov_deg: 53.5
     strip_overlap: 0.20           # fraction of footprint shared by adjacent strips
     goto_publish_count: 20
     # LEGACY surveyed corridor legs (fly_corridor_1/2, SITL / oa_eval only;
@@ -343,18 +353,21 @@ path_planner_node:
 # ─── Payload Node ─────────────────────────────────────────────────
 payload_node:
   ros__parameters:
-    # Winch: the payload hangs on a thread on a motor spool and is heavy
-    # enough to unwind it, so the motor reels in at full speed from node
-    # start. Release = stop for winch_unwind_s (the payload drops), then
-    # full speed again and winch_reel_wait_s held before climbing.
-    # Landed (disarmed after flying above 1 m) -> stop; armed again -> spin.
-    # BENCH-CHECK: spin must reel IN (else use the other end, 1000), stop
-    # must leave the spool free; SERVO10_TRIM = winch_pwm_stop.
-    release_channel: 10
-    winch_pwm_spin: 2000
-    winch_pwm_stop: 1500
-    winch_unwind_s: 8.0               # time it for the full thread on the bench
-    winch_reel_wait_s: 5.0
+    # Winch: the payload hangs on a 5 m thread on a motor spool and is
+    # heavy enough to unwind it, so the winch reels IN (full speed: relays
+    # are on/off) from node start to hold it. Release at drop_altitude_m:
+    # OUT for winch_unwind_s (lowers it), then IN at once (the jerk throws it
+    # off), then IN until landing. Landed (disarmed after flying above 1 m)
+    # -> both off; armed again -> IN.
+    # Relay numbers 0-based: 0 = RELAY1 (pin 50), 1 = RELAY2 (pin 51).
+    # IN = winch_relay_in ON (bench: "relay 1 0; relay 0 1" holds it up).
+    winch_relay_in: 0
+    winch_relay_out: 1
+    # TIME ON THE BENCH: OUT long enough for ~4.7 m of the 5 m thread, never
+    # the whole 5 m (the spool would wind it back on the other way).
+    winch_unwind_s: 11.0
+    winch_jerks: 1                    # >1: extra OUT winch_jerk_s / IN jerks
+    winch_jerk_s: 0.5
 
 # ─── Corridor ground markers (qr_detection ground_marker_node) ───
 # Downward camera: green = corridor entrance, blue = exit. HSV in OpenCV
@@ -419,9 +432,10 @@ sitl_corridor_sim:
     exit_offset_m: 1.0
     gps_offset_m: 0.5                   # EKF vs truth: GPS-only flight would scrape a wall
 
-# ─── Red-zone node (qr_detection), same downward Cam3 ──────────────
+# ─── Red-zone node (qr_detection), same downward camera ────────────
 red_zone_node:
   ros__parameters:
+    down_cam: cam1                # lens model for pixels -> metres: cam1 (Module 1.3) | cam3
     cam_mirror: true              # as qr_scanner_node.cam_mirror
 
 # ─── QR Scanner Node (qr_detection) ────────────────────────────────
@@ -442,11 +456,12 @@ qr_scanner_node:
     # Picture match (fallback): correlation two looks must reach (SITL: same
     # marker >= 0.84, different <= 0.73). TUNE with real prints if possible.
     match_min_similarity: 0.78
-    # Camera intrinsics (camera_fx also sets the marker size looked for) — RPi Camera Module 3 at 1280x720 (approximate).
+    # Camera intrinsics (camera_fx also sets the marker size looked for) — Camera Module 1.3
+    # at 1280x720 from its full-width 1296x972 mode (approximate; Camera Module 3: 920).
     # Overridden by /camera_info when camera_ros publishes a calibration.
     # To calibrate: ros2 run camera_calibration cameracalibrator
     #   --size 8x6 --square 0.025 image:=/down_frame
-    camera_fx: 920.0
-    camera_fy: 920.0
+    camera_fx: 1270.0
+    camera_fy: 1270.0
     camera_cx: 640.0
     camera_cy: 360.0

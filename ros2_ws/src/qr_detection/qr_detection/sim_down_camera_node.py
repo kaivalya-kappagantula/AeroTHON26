@@ -49,7 +49,8 @@ class SimDownCamera(Node):
         super().__init__("sim_down_camera")
         gp = lambda n, d: self.declare_parameter(n, d).value        # noqa: E731
         w, h = int(gp("width", 1280)), int(gp("height", 720))
-        self.cam = CameraModel.cam3_default(w, h, float(gp("mount_yaw_deg", 0.0)))
+        self.cam = CameraModel.nominal(str(gp("down_cam", "cam1")), w, h,
+                                       float(gp("mount_yaw_deg", 0.0)))
         marker = float(gp("marker_size_m", 1.0))
         self._heading_error = math.radians(float(gp("heading_error_deg", 0.0)))
         self._mirror = bool(gp("mirror", False))

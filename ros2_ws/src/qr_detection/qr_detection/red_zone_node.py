@@ -117,6 +117,7 @@ class RedZoneNode(Node):
         self.height = int(gp("height", 720))
         self.fps = int(gp("fps", 30))
         self.lens = float(gp("lens_position", 0.1))
+        self.down_cam = str(gp("down_cam", "cam1"))                # cam1 (Module 1.3) | cam3
         self.mount_yaw = float(gp("mount_yaw_deg", 0.0))
         self.cam_mirror = bool(gp("cam_mirror", False))           # image mirrored left-right
         self.window_s = float(gp("window_s", 4.0))
@@ -246,7 +247,7 @@ class RedZoneNode(Node):
                                        interpolation=cv2.INTER_AREA)
                 if self.perception is None:
                     h, w = frame.shape[:2]
-                    cam = CameraModel.cam3_default(w, h, self.mount_yaw)
+                    cam = CameraModel.nominal(self.down_cam, w, h, self.mount_yaw)
                     self.perception = RedZonePerception(
                         cam, RedConfig(s_min=self.s_min, v_min=self.v_min,
                                        ignore_regions=self.ignore_regions), self.map,

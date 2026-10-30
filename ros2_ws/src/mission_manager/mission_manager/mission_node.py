@@ -564,19 +564,66 @@ class MissionNode(Node):
             raise MissionAbort(kind, f"{label} failed: {res.message}")
 
     def _entry_corridor_phase(self):
-        """Phase 2, shared by the mission and its test flight
-        (entry_corridor_mission): back over the takeoff point at this altitude
+        """Phase 2, shared by the mission and its test flights: surveyed entry
+        corridor -> flown OVER at cruise_altitude_m (_overfly_entry_corridor);
+        not surveyed (SITL, another site) -> through it on its banner
+        (_entry_corridor_leg). Then straight up to post_entry_alt_m where the
+        drone is: the arena sweep starts from there."""
+        if self.survey is not None and self.survey.entry is not None:
+            self._overfly_entry_corridor()
+        else:
+            self.get_logger().warn("[mission_node] Entry corridor not surveyed — flying "
+                                   "through it on its banner instead of over it")
+            self._entry_corridor_leg()
+        self._climb_in_place(self.cfg.post_entry_alt_m)
+
+    def _entry_exit_midpoint(self):
+        """(lat, lon) midway between the surveyed entry corridor's end_left
+        and end_right corners, shifted with the survey like every surveyed
+        point. A corner not measured -> the fitted centreline's end."""
+        s = self.survey
+        left, right = site_survey.corridor_points(self.cfg, "entry")[2:]
+        if left is None or right is None:
+            return s.gps(s.entry.end)
+        (le, ln), (re, rn) = s.local(*left), s.local(*right)
+        return s.gps(((le + re) / 2.0 + s.shift[0], (ln + rn) / 2.0 + s.shift[1]))
+
+    def _overfly_entry_corridor(self):
+        """Over the whole entry corridor at cruise_altitude_m (well above its
+        8 ft walls), nose down it: from where the reference QR left the drone
+        to the centre of its mouth, then along it to the midpoint of its two
+        exit corners. Not reached in time -> MissionAbort("failure") (phase
+        failsafe: the arena sweep starts from wherever the drone is)."""
+        cfg, c = self.cfg, self.survey.entry
+        alt = float(cfg.cruise_altitude_m)
+        yaw = c.axis_yaw
+        speed = float(cfg.entry_overfly_speed_ms)
+        tol = float(cfg.entry_overfly_tolerance_m)
+        self._climb_in_place(alt, yaw)
+        for label, (lat, lon) in (("mouth centre", self.survey.gps(c.mouth)),
+                                  ("exit midpoint", self._entry_exit_midpoint())):
+            dist = 0.0 if self.gps is None else mav.haversine(*self.gps, lat, lon)
+            self.get_logger().info(
+                f"[mission_node] Entry corridor overfly: to its {label} ({lat:.7f}, {lon:.7f}), "
+                f"{dist:.1f} m at {alt:.1f} m")
+            if not self._goto_and_wait(lat, lon, alt, tol,
+                                       max(30.0, 4.0 * dist / max(speed, 0.1)), speed,
+                                       face_target=False, hold_yaw_enu=yaw):
+                raise MissionAbort("failure", f"entry corridor overfly: {label} not reached")
+        # Corridor 1's far end and direction, for phase 5 (unsurveyed exit only).
+        self.c1_exit = (self.gps[0], self.gps[1], yaw)
+        self.get_logger().info(
+            f"[mission_node] Over the entry corridor's exit midpoint "
+            f"({self.gps[0]:.7f}, {self.gps[1]:.7f})")
+
+    def _entry_corridor_leg(self):
+        """Phase 2 without a survey: back over the takeoff point at this altitude
         (finding / centring on the QR moved the drone), down to
         corridor_start_alt_m on the placed heading (the banner search is
         centred on it), then /path_planner/entry_corridor — +-90 deg banner
         search, line-up on the walls under it, corridor flown until the walls
-        end — and straight up to post_entry_alt_m.
-
-        Surveyed entry corridor: no banner search from over home — down to
-        corridor_start_alt_m where the drone is (over the reference QR) and
-        path_planner flies to the surveyed line-up point from there."""
-        if self.survey is None or self.survey.entry is None:
-            self._return_over_home()
+        end."""
+        self._return_over_home()
         self._climb_in_place(self.cfg.corridor_start_alt_m, self.placed_yaw_enu())
         # In the leg path_planner owns the obstacle sensor timeout (as in the
         # exit corridor): its SENSOR_TIMEOUT first backs out from under the
@@ -595,7 +642,6 @@ class MissionNode(Node):
             self.get_logger().info(
                 f"[mission_node] Corridor 1 left at ({self.gps[0]:.7f}, {self.gps[1]:.7f}), "
                 f"heading {self.heading_deg:.0f} deg")
-        self._climb_in_place(self.cfg.post_entry_alt_m)
 
     def _exit_corridor_phase(self):
         """Phase 5: to where the exit corridor should be (corridor 1 mirrored
@@ -857,16 +903,17 @@ class MissionNode(Node):
                 shown = self.sm.mission_target_qr or "(no text — matched by picture)"
                 self.get_logger().info(f"[mission_node] Target locked: '{shown}'")
 
-            # Phase 2: the entry corridor. Failed -> the planner has backed
-            # out from under the banner; phase 3 climbs straight up first.
+            # Phase 2: over the entry corridor at 5 m to the midpoint of its
+            # exit corners, then up to post_entry_alt_m (unsurveyed: through
+            # it on its banner). Failed -> phase 3 climbs straight up first.
             self.sm.qr_scanned()
             self._log_clock("phase 2, entry corridor")
             self._phase("phase 2 (entry corridor)", self._entry_corridor_phase)
 
             self.sm.entry_complete()
-            # Phase 3: the arena search, ended early by the mission clock so
-            # phases 4-5 still fit. No reference QR: nothing matches, but the
-            # QRs it sees are kept for the random drop.
+            # Phase 3: the arena search from where phase 2 ended, cut short by
+            # the mission clock so phases 4-5 still fit. No reference QR:
+            # nothing matches, but the QRs it sees are kept for the random drop.
             self._log_clock("phase 3, arena search")
             target = None
             until = self._arena_deadline()

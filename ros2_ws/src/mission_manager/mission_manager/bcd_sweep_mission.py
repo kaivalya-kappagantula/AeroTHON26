@@ -65,7 +65,7 @@ class BcdSweepMission(Node):
         self.area_h = float(gp("area_height_m", 5.0))
         self.altitude = float(gp("altitude", 2.0))
         self.speed = float(gp("speed_ms", 0.25))
-        self.hfov = float(gp("hfov_deg", 66.0))
+        self.hfov = float(gp("hfov_deg", 53.5))
         self.overlap = float(gp("overlap", 0.20))
         self.strip_width = float(gp("strip_width_m", 0.0))          # 0 = from camera
         self.edge_margin = float(gp("edge_margin_m", 0.0))

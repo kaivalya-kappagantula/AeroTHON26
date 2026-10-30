@@ -164,9 +164,9 @@ class QRScannerNode(Node):
         self.declare_parameter("locate_timeout_s", 8.0)
         self.declare_parameter("locate_frames", 3)
         # Camera intrinsics — must be set from calibration or /camera_info
-        # Defaults are approximate for RPi Camera Module 3 at 1280x720
-        self.declare_parameter("camera_fx", 920.0)
-        self.declare_parameter("camera_fy", 920.0)
+        # Defaults are approximate for RPi Camera Module 1.3 at 1280x720 (Module 3: 920)
+        self.declare_parameter("camera_fx", 1270.0)
+        self.declare_parameter("camera_fy", 1270.0)
         self.declare_parameter("camera_cx", 640.0)
         self.declare_parameter("camera_cy", 360.0)
         # Snapshot of the Phase 2 confirming frame

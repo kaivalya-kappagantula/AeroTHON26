@@ -9,12 +9,12 @@
 #   2. GPS fix + obstacle sensor live                          (mission_node)
 #   3. gradual takeoff to cruise_altitude_m (launch arg takeoff_alt on the
 #      drone), holding the heading it was placed with           (mission_node)
-#   4. phase 2: over the takeoff point, down to corridor_start_alt_m, then
-#      /path_planner/entry_corridor — sweep +-90 deg around the placed heading
-#      for the green banner (at 0.5 m altitude steps), fly toward it, measure
-#      it, line up on the walls under it, fly through at the middle of the
-#      opening until the walls end (path_planner/entry_corridor.py) — then
-#      straight up to post_entry_alt_m                          (mission_node)
+#   4. phase 2: surveyed entry corridor -> over it at cruise_altitude_m to
+#      the midpoint of its exit corners; not surveyed -> over the takeoff
+#      point, down to corridor_start_alt_m, then /path_planner/entry_corridor
+#      (green banner search, line-up, through the middle until the walls end,
+#      path_planner/entry_corridor.py) — then straight up to
+#      post_entry_alt_m                                          (mission_node)
 #   5. hover entry_test_hover_s, LAND in place, wait for auto-disarm
 # State machine: IDLE -> TAKEOFF -> SCAN_REFERENCE_QR (passed through, no
 # scan) -> ENTRY_CORRIDOR -> LANDING (entry_test_done) -> LANDED.

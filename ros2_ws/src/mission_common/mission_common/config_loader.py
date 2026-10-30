@@ -57,8 +57,8 @@ def load_mission_config(node) -> MissionConfig:
     cfg.origin_lon            = _declare(node, "origin_lon", 77.5946)
 
     # ── Downward camera (RPi Camera Module 3) ────────────────────
-    # 66 deg = standard Camera Module 3; use 102 for the Wide variant.
-    cfg.down_cam_hfov_deg     = _declare(node, "down_cam_hfov_deg", 66.0)
+    # 53.5 deg = Camera Module 1.3; 66 = Camera Module 3, 102 its Wide variant.
+    cfg.down_cam_hfov_deg     = _declare(node, "down_cam_hfov_deg", 53.5)
     # Fraction of the camera footprint shared by adjacent strips.
     cfg.strip_overlap         = _declare(node, "strip_overlap", 0.20)
 
@@ -127,8 +127,12 @@ def load_mission_config(node) -> MissionConfig:
     # After the reference QR, descend to this before the banner search (the
     # search's first full turn is at the altitude it starts at).
     cfg.corridor_start_alt_m  = _declare(node, "corridor_start_alt_m", 1.2192)
-    # Straight up to this once past the entry corridor's walls (the later
-    # phases set their own altitudes).
+    # Surveyed entry corridor: flown OVER at cruise_altitude_m, mouth centre
+    # -> midpoint of its two exit corners, at this speed / arrival tolerance.
+    cfg.entry_overfly_speed_ms    = _declare(node, "entry_overfly_speed_ms", 0.7)
+    cfg.entry_overfly_tolerance_m = _declare(node, "entry_overfly_tolerance_m", 0.7)
+    # Straight up to this at the end of the entry corridor (the arena sweep
+    # starts from there; the later phases set their own altitudes).
     cfg.post_entry_alt_m      = _declare(node, "post_entry_alt_m", 9.25)
 
     # ── Arena search, phase 3 (mission_manager/arena_search.py) ──
@@ -209,7 +213,7 @@ def load_mission_config(node) -> MissionConfig:
     cfg.drop_center_tol_m        = _declare(node, "drop_center_tol_m", 0.3)
     cfg.drop_center_passes       = _declare(node, "drop_center_passes", 3)
     cfg.drop_center_max_offset_m = _declare(node, "drop_center_max_offset_m", 2.0)
-    # Wait for /payload/release (winch unwind + reel-in, held in place)
+    # Wait for /payload/release (winch lower + jerk + restart, held in place)
     cfg.drop_release_timeout_s   = _declare(node, "drop_release_timeout_s", 60.0)
 
     # ── Obstacle sensor health (obstacle_avoidance coverage_guard) ─
@@ -234,10 +238,11 @@ def load_mission_config(node) -> MissionConfig:
 
     # ── Payload Specific ─────────────────────────────────────────
     # Winch (spool): spinning = payload held, stopped = it unwinds and drops
-    cfg.release_channel     = _declare(node, "release_channel", 10)
-    cfg.winch_pwm_spin      = _declare(node, "winch_pwm_spin", 2000)
-    cfg.winch_pwm_stop      = _declare(node, "winch_pwm_stop", 1500)
-    cfg.winch_unwind_s      = _declare(node, "winch_unwind_s", 8.0)
-    cfg.winch_reel_wait_s   = _declare(node, "winch_reel_wait_s", 5.0)
+    # (motor driver on two FC relays, 0 = RELAY1; IN = in ON, OUT = out ON)
+    cfg.winch_relay_in      = _declare(node, "winch_relay_in", 0)
+    cfg.winch_relay_out     = _declare(node, "winch_relay_out", 1)
+    cfg.winch_unwind_s      = _declare(node, "winch_unwind_s", 11.0)
+    cfg.winch_jerks         = _declare(node, "winch_jerks", 1)
+    cfg.winch_jerk_s        = _declare(node, "winch_jerk_s", 0.5)
 
     return cfg
