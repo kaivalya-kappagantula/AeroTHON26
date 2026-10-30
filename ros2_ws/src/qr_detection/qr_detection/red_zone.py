@@ -48,7 +48,7 @@ class RpicamVidSource:
     always hands out the LATEST frame (avoids stale frames piling up in the
     pipe, which would desync the image from telemetry)."""
 
-    def __init__(self, width=1280, height=720, fps=30, lens_position=0.1,
+    def __init__(self, width=1280, height=720, fps=30, lens_position=None,
                  awb="daylight", shutter_us: Optional[int] = None):
         if width % 64 or height % 2:
             raise ValueError("width must be a multiple of 64 and height even "
@@ -60,12 +60,13 @@ class RpicamVidSource:
             "--codec", "yuv420",
             "--width", str(width), "--height", str(height),
             "--framerate", str(fps),
-            "--mode", "2304:1296:10:P",          # binned full-FOV sensor mode
-            "--autofocus-mode", "manual",
-            "--lens-position", str(lens_position),  # dioptres: 0.1 = 10 m
+            "--mode", "1296:972:10:P",           # Module 1.3 binned full-FOV mode
             "--awb", awb,                         # fixed AWB keeps red hue stable
             "-o", "-",
         ]
+        if lens_position is not None:             # Camera Module 3 only (1.3: fixed focus)
+            cmd[-2:-2] = ["--autofocus-mode", "manual",
+                          "--lens-position", str(lens_position)]  # dioptres: 0.1 = 10 m
         if shutter_us:
             cmd += ["--shutter", str(shutter_us)]
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,

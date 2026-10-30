@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""RPi Camera Module 3 live view WITHOUT Picamera2 (for Ubuntu on Pi 5).
+"""RPi Camera Module 1.3 live view WITHOUT Picamera2 (for Ubuntu on Pi 5).
 Reads raw YUV420 frames from rpicam-vid through a pipe. Run inside `ssh -Y -C`.
 Shows every 3rd frame at half size. Press q to quit.
 Pass --af for continuous autofocus (Cam3 only; the Camera Module 1.3 has none).
@@ -25,6 +25,7 @@ cmd = [
     VID, "-t", "0", "-n",
     "--codec", "yuv420",
     "--width", str(W), "--height", str(H), "--framerate", str(FPS),
+    "--mode", "1296:972:10:P",     # Module 1.3 full-width binned mode (else a cropped 1080p one)
     "-o", "-",
 ]
 if "--af" in sys.argv[1:]:

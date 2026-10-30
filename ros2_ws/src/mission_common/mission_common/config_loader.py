@@ -56,7 +56,7 @@ def load_mission_config(node) -> MissionConfig:
     cfg.origin_lat            = _declare(node, "origin_lat", 12.9716)
     cfg.origin_lon            = _declare(node, "origin_lon", 77.5946)
 
-    # ── Downward camera (RPi Camera Module 3) ────────────────────
+    # ── Downward camera (RPi Camera Module 1.3) ──────────────────
     # 53.5 deg = Camera Module 1.3; 66 = Camera Module 3, 102 its Wide variant.
     cfg.down_cam_hfov_deg     = _declare(node, "down_cam_hfov_deg", 53.5)
     # Fraction of the camera footprint shared by adjacent strips.

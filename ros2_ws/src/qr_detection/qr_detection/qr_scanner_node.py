@@ -8,7 +8,7 @@ Adapted from AeroTHON-main/QRCodeDetection/QRScannerNode.py to integrate
 with the mission_manager service-based interface.
 
 Works identically on:
-  - Real hardware (RPi5 + RPi Camera Module 3 / OAK-D)
+  - Real hardware (RPi5 + RPi Camera Module 1.3 / OAK-D)
   - Gazebo simulation (camera plugin publishing sensor_msgs/Image)
   - SITL (uses sitl_qr_simulator publishing to /qr/detection directly)
 

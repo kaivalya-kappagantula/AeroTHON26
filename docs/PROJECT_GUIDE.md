@@ -58,7 +58,7 @@ test rigs differ from the competition, so nothing is assumed.
 | Raspberry Pi 5 (Ubuntu 24.04, ROS 2 Jazzy) | Runs all of this code |
 | Pixhawk 6C Mini (ArduCopter) | Flight controller; the Pi talks to it over TELEM2 (`/dev/ttyAMA2:921600`) through **MAVROS** |
 | OAK-D Lite (forward) | Depth (walls, obstacles) + colour (green banner) |
-| RPi Camera Module 3 (downward) | QR codes and the red mat |
+| RPi Camera Module 1.3 (downward, OV5647, fixed focus) | QR codes and the red mat |
 | Payload winch | Motor spool, driver on FC relays RELAY1 (pin 50) / RELAY2 (pin 51), on/off = full speed: reels IN from payload_node start to hold the 100 g payload on its 5 m thread; at the drop OUT for `winch_unwind_s` (~4.7 m) then IN at once (the jerk throws it off), IN until landing; both off when it disarms after a flight |
 | RC transmitter CH7 | Mission start switch; flipping it LOW at any time hands control back to the pilot (LOITER) |
 

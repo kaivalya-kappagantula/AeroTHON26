@@ -1,7 +1,7 @@
 # Aerothon 2026 Mission 2 drone stack
 
 ROS 2 Jazzy + MAVROS + ArduPilot Copter 4.7, on a Raspberry Pi 5 with a Pixhawk 6C Mini,
-an OAK-D Lite (forward depth) and an RPi Camera Module 3 (downward, QR codes).
+an OAK-D Lite (forward depth) and an RPi Camera Module 1.3 (downward, QR codes).
 
 Mission: phase 1 = read the reference QR on the ground → take off → find the green
 banner and fly the entry corridor under it → climb to cruise; then lawnmower search for

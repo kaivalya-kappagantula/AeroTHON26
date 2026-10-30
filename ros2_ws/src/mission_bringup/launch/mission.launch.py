@@ -67,7 +67,7 @@ def generate_launch_description():
         description="MAVROS FCU URL (Pi TELEM2 by default; SITL: tcp://127.0.0.1:5760)")
     launch_camera_arg = DeclareLaunchArgument(
         "launch_camera", default_value="false",
-        description="Start camera_ros for the downward RPi Camera Module 3 "
+        description="Start camera_ros for the downward RPi Camera Module 1.3 "
                     "(needs camera_ros built against Raspberry Pi's libcamera)")
     camera_arg = DeclareLaunchArgument(
         "camera", default_value="0",
@@ -123,14 +123,13 @@ def generate_launch_description():
     mission_node = mission_node_of("mission_manager", "mission_node")
 
     # ================================================================
-    # Downward camera: RPi Camera Module 3 via camera_ros
+    # Downward camera: RPi Camera Module 1.3 (OV5647) via camera_ros
     # ================================================================
     # Exactly the camera the phase test flights use (qr_scan_mission,
-    # arena_search_mission, payload_drop_mission): node "camera" (the
-    # mission's _focus_camera sets /camera LensPosition per phase), BGR888,
-    # manual focus — this libcamera build cannot read the IMX708's PDAF data,
-    # so autofocus never focuses. Starts focused for the reference QR
-    # (cruise_altitude_m). camera_info is NOT remapped to /camera_info: an
+    # arena_search_mission, payload_drop_mission): node "camera", BGR888.
+    # The 1.3 is fixed focus: camera_ros only declares controls the sensor
+    # has, so AfMode / LensPosition (and _focus_camera's per-phase
+    # LensPosition) are ignored on it; they only act on a Camera Module 3. camera_info is NOT remapped to /camera_info: an
     # uncalibrated camera_ros publishes K = 0, which would overwrite
     # qr_scanner_node's camera_fx (it sets the marker size looked for).
     down_camera = Node(
