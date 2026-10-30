@@ -150,7 +150,7 @@ def generate_launch_description():
         a('obstacle_width_m', default_value='1.2'),
         a('obstacle_top_m', default_value='1.8288',
           description='obstacle height (m); above altitude_m so it must be flown around'),
-        a('obstacle_depth_m', default_value='0.4'),
+        a('obstacle_depth_m', default_value='0.1'),
         a('spacing_m', default_value='2.5', description='staggered: front-face spacing (m)'),
         a('stagger_m', default_value='0.75',
           description='staggered: box centres this far left / right of the centreline (m)'),

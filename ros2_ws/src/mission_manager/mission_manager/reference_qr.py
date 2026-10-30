@@ -6,9 +6,10 @@
 # mission does. The caller is a MissionNode that has already taken off to
 # cruise_altitude_m over the launch point.
 #
-#   0. EXPECT: the QR lies ~qr_initial_advance_m (1 m) straight ahead of
-#      the takeoff point, along the heading the drone was placed with. That
-#      spot is sent to qr_scanner_node (/qr_scanner/locate_hint): it uses
+#   0. EXPECT: the QR lies at survey_qr (site survey, anchored on today's
+#      home fix — mission_common/survey.py), else ~qr_initial_advance_m
+#      (1 m) straight ahead of the takeoff point, along the heading the
+#      drone was placed with. That spot is sent to qr_scanner_node (/qr_scanner/locate_hint): it uses
 #      only a QR within qr_expected_radius_m of it (GPS drift allowed) and
 #      the one nearest it — clutter elsewhere is never flown to.
 #   1. FIND: /perception/locate_qr reports where a QR is relative to the
@@ -19,7 +20,7 @@
 #      It looks first from over the takeoff point: the
 #      reference QR is placed ~1 m ahead, inside the frame at 5 m (+-1.9 m
 #      along the nose, +-3.4 m across). Only if none is in view does it fly
-#      qr_initial_advance_m (1 m) ahead, then a little FORWARD or BACK of
+#      to the surveyed spot (else qr_initial_advance_m ahead), then a little FORWARD or BACK of
 #      that point (qr_search_offsets_m, in order) and look again. Those
 #      blind steps (only when nothing of a QR is in view) go along the
 #      compass heading the drone was placed with.
@@ -176,7 +177,14 @@ class ReferenceQr:
         little forward / back along the nose until a QR is in view. Returns
         the first locate reply, or None."""
         found = self._locate()
-        if found is None and ahead > 0.0:
+        surveyed = self._surveyed_spot()
+        if found is None and ahead > 0.0 and surveyed is not None and self.node.gps is not None:
+            d_n, d_e = mav.ne_offset(*self.node.gps, *surveyed)
+            self._log().info(f"[reference_qr] No QR in view — moving to its surveyed spot "
+                             f"({math.hypot(d_n, d_e):.1f} m)")
+            self._move_by(d_n, d_e, "to the surveyed QR")
+            found = self._locate()
+        elif found is None and ahead > 0.0:
             self._log().info(f"[reference_qr] No QR in view — moving {ahead:.1f} m ahead")
             self._step_forward(ahead)
             found = self._locate()
@@ -236,10 +244,20 @@ class ReferenceQr:
 
     # -------------------------------------------------------------------
 
+    def _surveyed_spot(self):
+        """(lat, lon) of survey_qr (anchored), or None without a survey."""
+        survey = getattr(self.node, "survey", None)
+        if survey is None or survey.qr is None:
+            return None
+        return survey.gps(survey.qr)
+
     def _expected_spot(self):
-        """(lat, lon) the QR should be at: qr_initial_advance_m ahead of
-        takeoff along the placed heading, or None if either is unknown."""
+        """(lat, lon) the QR should be at: the surveyed spot, else
+        qr_initial_advance_m ahead of takeoff along the placed heading, or
+        None if either is unknown."""
         node = self.node
+        if self._surveyed_spot() is not None:
+            return self._surveyed_spot()
         if node.home is None or node.placed_heading_deg is None:
             return None
         d, h = float(self.cfg.qr_initial_advance_m), math.radians(node.placed_heading_deg)
@@ -252,8 +270,10 @@ class ReferenceQr:
         radius = float(self.cfg.qr_expected_radius_m)
         pub.publish(String(data="" if spot is None else f"{spot[0]:.8f},{spot[1]:.8f},{radius:.2f}"))
         if spot is not None:
-            self._log().info(f"[reference_qr] Expecting the QR {self.cfg.qr_initial_advance_m:.1f} m "
-                             f"ahead of takeoff (using only a QR within {radius:.1f} m of it)")
+            where = ("at its surveyed spot" if self._surveyed_spot() is not None else
+                     f"{self.cfg.qr_initial_advance_m:.1f} m ahead of takeoff")
+            self._log().info(f"[reference_qr] Expecting the QR {where} "
+                             f"(using only a QR within {radius:.1f} m of it)")
 
     def run(self):
         """Find (from here first), centre, read. Returns the QR's text ("" =

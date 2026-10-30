@@ -97,7 +97,7 @@ class SitlCorridorSim(Node):
         dp('wall_height_m', 3.0)
         dp('mouth_offset_m', 2.5)
         dp('exit_offset_m', 1.0)
-        dp('obstacle_depth_m', 0.4)
+        dp('obstacle_depth_m', 0.1)        # boards 5-10 cm thick
         dp('gps_offset_m', 0.0)
         dp('gps_drift_m', 0.0)
         dp('gps_drift_period_s', 20.0)

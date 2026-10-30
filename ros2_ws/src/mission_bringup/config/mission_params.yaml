@@ -2,11 +2,13 @@
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
 # ║  UPDATE ON COMPETITION DAY:                                       ║
+# ║    - the /** survey_* block below (takeoff spot, reference QR,    ║
+# ║      both corridors' wall corners), measured on site             ║
 # ║    - mission_node arena_corners_lat / _lon (the arena's 4 GPS     ║
 # ║      corners, in order around it). Left all zero, the full        ║
 # ║      mission refuses to take off (require_arena_corners).         ║
-# ║  Nothing else is surveyed: the red mat is found in flight, both   ║
-# ║  corridors are found by their banners (green entry, blue exit).   ║
+# ║  The red mat is still found in flight. A corridor with no survey  ║
+# ║  is found by its banner (green entry, blue exit) as before.       ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 #
 # Legacy / SITL only (NOT used by the full mission): path_planner_node
@@ -17,21 +19,60 @@
 #
 # FC-side settings this stack relies on (set in Mission Planner):
 #   BATT_LOW_VOLT 14.0 / BATT_CRT_VOLT 13.6, BATT_FS_LOW_ACT, BATT_FS_CRT_ACT
-#   FENCE_ALT_MAX 10 (arena_alt_m / post_entry_alt_m fly at 9 m, under it), RTL_ALT >= 500 cm
+#   FENCE_ALT_MAX 10 (companion caps every altitude at 9.5 m, mavros_utils.MAX_ALT_M;
+#   arena 9.25 m), RTL_ALT 500..950 cm
 #   (FC-side RTL must clear the 2.44 m corridor walls)
 #   PRX1_TYPE 2, AVOID_* (obstacle_avoidance/params/stage5_6_corridor.param),
 #   OA_TYPE 0 and GUID_OPTIONS 0 (plain position control in GUIDED; the
 #   corridors are flown by path_planner, not BendyRuler), SERVO10_FUNCTION 0,
-#   SERVO10_TRIM = winch stop PWM, RC7 = mission auto switch
+#   SERVO10_TRIM = winch stop PWM. RC7 is NOT used: the mission starts on launch.
+
+# ─── Site survey (all nodes; mission_common/survey.py) ─────────────
+# [lat, lon]; [0.0, 0.0] = not measured. Corridor corners are named from the
+# drone's view while it flies THROUGH that corridor (entry: home -> arena,
+# exit: arena -> home); mouth = where it goes in (the banner side).
+# Used only when the drone takes off within survey_max_home_dist_m of
+# survey_home (SITL / other sites: off). Placed on survey_home (within
+# survey_max_home_shift_m): every surveyed point, the arena corners too, is
+# shifted by today's home fix - survey_home (GPS error common to both).
+# Centrelines are least-squares fits through all corners with the known
+# width (pairs measured 3.40 / 3.55 / 2.97 m apart: GPS scatter): the mission
+# log prints each corridor's length, heading and each corner's residual.
+# Site survey 2026-10-30, drone placed facing the arena (heading ~296 deg):
+#   entry corridor 6.94 m, heading 300 deg; exit corridor 7.25 m, 115 deg.
+/**:
+  ros__parameters:
+    survey_home: [13.1705825, 77.5331628]       # drone's takeoff spot
+    survey_qr: [13.1705922, 77.5331422]         # reference QR centre (2.5 m ahead)
+    survey_entry_mouth_left: [13.1705569, 77.5331022]   # green banner side
+    survey_entry_mouth_right: [13.1705868, 77.5331086]
+    survey_entry_end_left: [13.1705879, 77.5330467]     # arena side
+    survey_entry_end_right: [13.1706190, 77.5330538]
+    survey_exit_mouth_left: [13.1706634, 77.5330672]    # blue banner, arena side
+    survey_exit_mouth_right: [13.1706380, 77.5330589]
+    survey_exit_end_left: [0.0, 0.0]                    # not measured: right wall + width
+    survey_exit_end_right: [13.1706093, 77.5331163]     # home side
+    survey_corridor_width_m: 3.5052     # 11.5 ft: rebuilds a missing / off corner
+    survey_max_home_dist_m: 100.0       # takeoff further from survey_home: survey off
+    survey_anchor_to_home: true
+    survey_max_home_shift_m: 3.0        # placed further off survey_home: not shifted
 
 # ─── Mission Node ─────────────────────────────────────────────────
 mission_node:
   ros__parameters:
-    # Altitudes (m above home)
+    # Altitudes (m above home). Hard cap 9.5 m everywhere (mavros_utils.MAX_ALT_M;
+    # config_loader refuses a value above it):
+    #   takeoff + reference QR 5 m -> corridors 1.22 m (half the 8 ft walls,
+    #   never above 8 ft except the exit failsafe) -> arena 9.25 m -> drop
+    #   down to 5 m and back up to 9.25 m -> exit corridor 1.22 m -> home 5 m
     drop_altitude_m: 5.0
-    cruise_altitude_m: 5.0
-    # Speeds for mission_node's own gotos: fly-over-QR uses arena speed,
-    # homing uses transit speed
+    cruise_altitude_m: 5.0          # takeoff altitude
+    # Speeds per phase (m/s):
+    #   takeoff climb  takeoff_climb_rate_ms 0.5      reference QR / drop centring
+    #   qr_move_speed_ms 0.5   entry corridor (clean) corridor_follow_speed_ms 0.7
+    #   exit corridor (thin white obstacles) corridor_exit_speed_ms 0.4
+    #   arena sweep + routing around red arena_sweep_speed_ms 0.5 (limited by
+    #   what the red camera sees ahead at 9.25 m: ~3.4 m)   homing transit 2.0
     arena_speed_ms: 1.5
     transit_speed_ms: 2.0
     # Timeouts
@@ -49,9 +90,10 @@ mission_node:
                                       # approach + corridor
     lawnmower_timeout_s: 600.0
     stream_rate_hz: 10.0
-    # Start gate: physical RC channel (1-based), switch HIGH = mission runs,
-    # flipping it LOW at any time aborts and hands control to the pilot (LOITER).
-    require_rc_switch: true
+    # Start gate: OFF — the mission starts as soon as it is launched (GPS,
+    # sensor and EKF checks, arm, 5 s armed wait, lift off) and RC CH7 is
+    # ignored entirely. true = wait for CH7 HIGH; CH7 LOW then aborts (LOITER).
+    require_rc_switch: false
     rc_auto_channel: 7
     rc_auto_pwm_thresh: 1700
     # Reference QR, read in the air at cruise_altitude_m over the launch
@@ -78,26 +120,31 @@ mission_node:
     qr_settle_hold_s: 1.0               # slower than this for this long
     qr_settle_timeout_s: 8.0            # (still moving after this: looks anyway)
     qr_locate_timeout_s: 8.0            # > qr_scanner_node locate_timeout_s
-    # Gradual takeoff (as testing/waypoint_mission.py): position estimate
-    # steady on the ground, arm + 7 s armed wait, lift off, slow climb to
-    # cruise_altitude_m holding the placed heading.
-    takeoff_steady_time_s: 3.0
+    # Gradual takeoff: arm straight away, 5 s armed wait on the ground
+    # (position drift still checked), lift off to takeoff_liftoff_alt_m, slow
+    # climb to cruise_altitude_m (5 m) holding the placed heading.
+    takeoff_steady_time_s: 0.0      # no disarmed wait before arming
     takeoff_max_ground_drift_m: 0.8
     takeoff_liftoff_alt_m: 0.5
     takeoff_climb_rate_ms: 0.5
-    # After the reference QR: descend to this before the green banner search.
-    corridor_start_alt_m: 3.0
+    # Before each banner search (entry: after the reference QR; exit: over
+    # the search point): straight down to this — the middle of the 8 ft
+    # corridor walls.
+    corridor_start_alt_m: 1.2192
     # Phase 2 end: climb straight up to this once past the entry corridor.
-    post_entry_alt_m: 9.0           # under the 10 m fence (FENCE_ALT_MAX 10)
+    post_entry_alt_m: 9.25          # arena altitude (9-9.5 m, cap 9.5)
     # Phase 3, arena search (mission_manager/arena_search.py). COMPETITION
     # DAY: the arena's 4 GPS corners, in order around it. All zero = use
     # the arena_width_m x arena_height_m rectangle at origin_lat/lon.
-    arena_corners_lat: [0.0, 0.0, 0.0, 0.0]
-    arena_corners_lon: [0.0, 0.0, 0.0, 0.0]
-    arena_alt_m: 9.0                # under the 10 m fence (FENCE_ALT_MAX 10)
+    # Site survey 2026-10-30, from the drone's view facing the arena:
+    # top left, top right, bottom right, bottom left (~23 x 17.5 m).
+    # Shifted with the survey when anchored (/** block above).
+    arena_corners_lat: [13.1705518, 13.1707511, 13.1707029, 13.1705055]
+    arena_corners_lon: [77.5328589, 77.5329181, 77.5330758, 77.5330117]
+    arena_alt_m: 9.25               # 9-9.5 m band (cap 9.5)
     arena_sweep_speed_ms: 0.5
     arena_red_margin_m: 2.0           # keep this far from the red mat's edge
-    arena_edge_margin_m: 1.0          # strips stay this far inside the arena edge
+    arena_edge_margin_m: 1.5          # strips stay this far inside the arena edge (was 1.0)
     arena_qr_size_m: 1.0              # strips spaced so a whole QR fits in the frame
     arena_match_passes: 2             # fly over the match + scan again, up to this often
     arena_match_tol_m: 1.0
@@ -118,6 +165,8 @@ mission_node:
     # this far sideways each way (away from corridor 1 first); then the exit
     # corridor failsafe (exit_failsafe_alt_m).
     exit_search_standoff_m: 6.0       # search this far out in the arena from it
+                                      # (surveyed exit: this far in front of its mouth,
+                                      # then path_planner lines up 2.5 m out)
     exit_search_shift_m: 3.0          # 0 = only the predicted point
     exit_corridor_timeout_s: 600.0    # mission_node's wait per exit corridor leg
     # EXIT CORRIDOR FAILSAFE (only there): any exit corridor failure -> climb
@@ -179,13 +228,13 @@ path_planner_node:
     lawnmower_timeout_s: 600.0
     mavros_arrival_tolerance_m: 2.0
     # ── Corridor following (path_planner/corridor_follow.py) ──
-    corridor_altitude_m: 1.5      # PLACEHOLDER: below the wall tops, above
-                                  # ground effect; obstacles must reach the
-                                  # depth slice (camera -0.35..+0.50 m) to be seen
-    corridor_max_altitude_m: 3.0  # climb-over ceiling. Keep BELOW the wall
-                                  # tops: above them the walls leave the slice
-                                  # and the leg holds, then lands.
-    corridor_follow_speed_ms: 0.5 # stage 0.3 -> 0.5 on hardware
+    corridor_altitude_m: 1.2192   # middle of the 8 ft (2.4384 m) walls
+    corridor_max_altitude_m: 2.4384  # climb-over ceiling = the 8 ft wall tops:
+                                  # never higher inside a corridor (only the
+                                  # exit failsafe climbs above them)
+    corridor_follow_speed_ms: 0.7 # entry corridor (no obstacles)
+    corridor_exit_speed_ms: 0.4   # exit corridor: thin white obstacles, sparse
+                                  # stereo depth on their faces -> more frames each
     # Centring first (NEW): more than 0.10 m off centre, the forward step
     # shrinks linearly to min_advance of the lookahead at centre_slow_m, so
     # more of the speed goes sideways against GPS drift / wind.
@@ -199,9 +248,9 @@ path_planner_node:
     drone_width_m: 0.6294         # measured: 62.94 cm tip-to-tip incl. props (max)
     side_clearance_m: 0.10        # passing needs drone_width + 2 x this
     obstacle_stop_dist_m: 1.0     # wait this far from an obstacle until lined up
-    obstacle_length_m: 0.3        # assumed depth (only the face is seen): thin boxes;
-                                  # crossing behind waits pass_margin 0.5 m more, so
-                                  # real depths up to ~0.5 m still clear
+    obstacle_length_m: 0.10       # obstacles are white boards 5-10 cm thick (only
+                                  # the face is seen); crossing behind waits
+                                  # pass_margin 0.5 m more on top
     climb_clearance_m: 0.30
     body_below_camera_m: 0.15     # PLACEHOLDER: camera to lowest point (legs)
     require_corridor_perception: true   # false = GPS centreline only (SITL)
@@ -242,6 +291,18 @@ path_planner_node:
                                   # stays <= banner bottom - this - climb_clearance_m
     banner_climb_after_m: 0.7     # no climb until this far past the mouth (half the
                                   # drone's length + GPS error)
+    # ── Surveyed corridors (the /** survey block): no banner search ──
+    # To entry_preentry_m in front of the surveyed mouth, down to half the
+    # banner height, look survey_banner_wait_s. Banner seen: its centre moves
+    # the line sideways (weighted by the two SDs, <= max_shift), its bottom
+    # edge sets the altitude. NOT seen: in on the surveyed line anyway.
+    survey_banner_wait_s: 4.0
+    survey_banner_min_frames: 3
+    survey_banner_max_shift_m: 1.5
+    survey_lateral_sd_m: 0.7      # surveyed line vs today's GPS
+    survey_banner_sd_m: 0.3       # banner bearing from 2.5 m
+    survey_max_correction_m: 1.5  # walls move the line at most this
+    survey_banner_bottom_m: 2.4384  # not measured: banner on the 8 ft walls
     corridor_end_visible_m: 3.5   # no set length (fly_corridor_here, entry): a
                                   # measured wall end this near must stay in
                                   # view, else the walls go on and it is dropped
@@ -251,7 +312,7 @@ path_planner_node:
     # it, line up on the walls under it, fly through at half the banner's
     # bottom-edge height. Width, length and altitude are measured, not set.
     entry_search_alt_min_m: 1.0   # banner not seen: sweep at the current
-    entry_search_alt_max_m: 3.0   # altitude, then at these, nearest first
+    entry_search_alt_max_m: 2.4   # altitude, then at these, nearest first (<= 8 ft)
     entry_search_alt_step_m: 0.5
     entry_search_yaw_rate_deg_s: 20.0
     entry_search_half_angle_deg: 90.0  # NEW: sweep this far each side of the
@@ -331,8 +392,8 @@ sitl_corridor_sim:
     # Corridor 2 = the exit corridor (s from its arena-side mouth): three
     # 3.5 ft wide x 6 ft tall obstacles (1.07 x 1.83 m) — in the middle, then
     # near the left wall, then near the right wall. Real positions are
-    # random; their depth is unknown (obstacle_depth_m here, 1.0 m assumed by
-    # the planner).
+    # random; they are boards 5-10 cm thick (sitl_corridor_sim obstacle_depth_m
+    # 0.1; the planner assumes obstacle_length_m 0.10).
     corridor2_obstacles: [1.5, 0.0, 1.0668, 1.8288,
                           3.6, 1.1, 1.0668, 1.8288,
                           5.6, -1.1, 1.0668, 1.8288]

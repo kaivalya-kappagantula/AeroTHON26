@@ -33,6 +33,9 @@
 #   4. on a match: brake, fly over its position (around the zones), hover,
 #      scan again to refine it (arena_match_passes). Returns its (lat, lon).
 #      Whole arena swept with no match -> None.
+#   5. every QR in view while scanning (/qr/seen, matching or not) is kept:
+#      random_qr() picks one inside the arena, clear of red, for the drop
+#      when no match was found (mission_node).
 #
 # Hops stay inside the box around the arena and the drone (no padding: the
 # arena edge is the fence). Altitude: arena_alt_m throughout.
@@ -50,6 +53,7 @@
 
 import json
 import math
+import random
 import time
 
 from shapely.geometry import Point
@@ -77,6 +81,8 @@ BLIND_HOLD_S = 10.0
 MAX_STOPS = 30
 ARRIVAL_TOL_M = 0.3
 MATCH_EDGE_TOL_M = 1.0       # a match this far outside the arena still counts
+SEEN_MERGE_M = 1.5           # /qr/seen sightings this close are the same QR
+SEEN_MIN_FRAMES = 3          # a seen QR counts once in this many frames (misreads)
 # Braking distance = speed * BRAKE_LATENCY_S + speed^2 / (2 * BRAKE_DECEL_MS2)
 BRAKE_LATENCY_S = 0.5        # frame -> red_zone_node -> mission -> FC
 BRAKE_DECEL_MS2 = 1.0        # well under ArduCopter's guided deceleration
@@ -100,6 +106,7 @@ class ArenaSearch:
         self._watch_match = False    # record matches (sweep + refine)
         self._refining = False       # flying over a match: matches do not stop it
         self._reference = None       # qr_scanner_node's stored reference (dict)
+        self.seen = []               # [lat, lon, frames]: every QR seen while scanning
         self.frame = None
         self.zones = []              # confirmed red outlines, arena frame
         self.stops = 0
@@ -109,6 +116,7 @@ class ArenaSearch:
         node.create_subscription(Bool, "/red_zone/sighting", self._sighting_cb, 10)
         node.create_subscription(Float32, "/red_zone/new_red_dist", self._dist_cb, 10)
         node.create_subscription(String, "/qr/detection", self._qr_cb, 10)
+        node.create_subscription(String, "/qr/seen", self._seen_cb, 50)
         latched = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL,
                              history=HistoryPolicy.KEEP_LAST, depth=1)
@@ -162,15 +170,45 @@ class ArenaSearch:
             self._log().info(f"[arena] MATCHING QR at ({u:.1f}, {v:.1f}) m in the arena")
         self._match = (lat, lon)
 
+    def _seen_cb(self, msg: String):
+        # "content|lat|lon": any QR in view while scanning (merged by position)
+        try:
+            _, lat, lon = msg.data.rsplit("|", 2)
+            lat, lon = float(lat), float(lon)
+        except ValueError:
+            return
+        for q in self.seen:
+            if mav.haversine(q[0], q[1], lat, lon) <= SEEN_MERGE_M:
+                n = q[2]
+                q[0], q[1], q[2] = (q[0] * n + lat) / (n + 1), (q[1] * n + lon) / (n + 1), n + 1
+                return
+        self.seen.append([lat, lon, 1])
+
+    def random_qr(self):
+        """(lat, lon) of a random QR seen while scanning — inside the arena
+        (not the reference QR beside it), seen in SEEN_MIN_FRAMES frames,
+        clear of the red zones' margins — or None."""
+        if self.frame is None:
+            return None
+        picks = [(q[0], q[1]) for q in list(self.seen) if q[2] >= SEEN_MIN_FRAMES
+                 and self.frame.contains(*self.frame.from_gps(q[0], q[1]), MATCH_EDGE_TOL_M)
+                 and self.clear_of_red(q[0], q[1])]
+        self._log().info(f"[arena] {len(picks)} QR(s) to drop on at random "
+                         f"({len(self.seen)} seen)")
+        return random.choice(picks) if picks else None
+
     # ── Helpers ──────────────────────────────────────────────────────────
     def corners(self):
         """The arena's 4 GPS corners from the parameters; all zero = not set
         -> the rectangle arena_width_m (East) x arena_height_m (North) from
-        (origin_lat, origin_lon)."""
+        (origin_lat, origin_lon). Surveyed with the rest of the site: moved
+        by the same shift as the survey (anchored on today's home fix)."""
         c = self.cfg
         lats, lons = list(c.arena_corners_lat), list(c.arena_corners_lon)
         if len(lats) == 4 and len(lons) == 4 and any(lats) and any(lons):
-            return list(zip(lats, lons))
+            survey = getattr(self.node, "survey", None)
+            d_e, d_n = survey.shift if survey is not None else (0.0, 0.0)
+            return [mav.offset_gps(lat, lon, d_n, d_e) for lat, lon in zip(lats, lons)]
         lat0, lon0 = c.origin_lat, c.origin_lon
         k = M_PER_DEG_LAT * math.cos(math.radians(lat0))
         w, h = c.arena_width_m, c.arena_height_m
@@ -531,6 +569,7 @@ class ArenaSearch:
         lawnmower_timeout_s applies too."""
         cfg, node = self.cfg, self.node
         self.zones, self.stops, self._match, self._rescan = [], 0, None, False
+        self.seen = []
         sweep, ahead_m = self._setup(corners)
         self._log().info(
             f"[arena] {self.frame.width:.0f} x {self.frame.height:.0f} m arena: "

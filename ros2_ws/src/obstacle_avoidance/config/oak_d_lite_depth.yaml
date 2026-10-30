@@ -71,9 +71,17 @@
                                   # right-mono frame that camera_info describes
       i_width: 640                # MUST match the mono output — see header note.
       i_height: 480               # These are the camera_info dims, not left.i_*.
-      i_subpixel: false           # costs bandwidth; 6 m max report doesn't need it
-      i_lr_check: true
-      i_stereo_conf_threshold: 200   # stricter: drops low-confidence matches
+      # Corridor obstacles are WHITE boards 5-10 cm thick with a little print,
+      # between BLACK walls: almost no texture on either, so stereo depth comes
+      # mostly from the boards' vertical edges against the dark background and
+      # from the print. Tuned for that:
+      i_subpixel: true            # integer disparity at 480P is ~0.27 m per step at
+                                  # 3 m — more than a board's thickness; subpixel ~0.03 m.
+                                  # Output stays 16UC1 mm, same bandwidth.
+      i_lr_check: true            # keep: rejects mismatches on the plain faces
+      i_stereo_conf_threshold: 230   # was 200: accept the weaker matches on the faint
+                                     # print / edges (LR check + speckle still filter)
       i_enable_speckle_filter: true  # removes small noisy blobs
-      i_depth_filter_size: 5         # 5x5 median filter            # rejects occlusion-edge fliers — cheap, worth it
+      i_depth_filter_size: 3         # was 5: a 5x5 median erases the thin bands of
+                                     # depth along a board's edges on a blank face
       i_extended_disparity: false

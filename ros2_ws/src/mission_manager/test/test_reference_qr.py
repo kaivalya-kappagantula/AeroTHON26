@@ -113,3 +113,24 @@ def test_scanner_is_told_where_the_qr_should_be_then_released(world):
     assert _ne(lat, lon) == pytest.approx((0.0, 1.0), abs=0.01)
     assert radius == 2.5
     assert sent[-1] == ""                            # payload drop etc. look anywhere again
+
+
+def _survey_at(qr_ne):
+    """A site survey (survey.Survey) whose QR is qr_ne (north, east) from HOME."""
+    from mission_common import survey as sv
+    return sv.Survey(HOME, qr=(qr_ne[1], qr_ne[0]))
+
+
+def test_surveyed_qr_out_of_view_flown_to_directly(world):
+    # ~2.9 m ahead-left: out of view from over takeoff; with a
+    # survey the drone flies to the surveyed spot, not 1 m along the heading
+    world.qr_ne = (2.8, -1.0)
+    node = FakeNode()
+    node.survey = _survey_at((2.7, -1.1))            # surveyed ~0.14 m off
+    sent = []
+    node.locate_hint_pub = SimpleNamespace(publish=lambda m: sent.append(m.data))
+    assert ReferenceQr(node).run() == ""
+    assert node.moves[0] == pytest.approx((2.7, -1.1), abs=0.05)
+    assert len(node.moves) == 1                      # 0.14 m off: inside qr_center_tol_m
+    lat, lon, _ = (float(x) for x in sent[0].split(","))
+    assert _ne(lat, lon) == pytest.approx((2.7, -1.1), abs=0.01)   # hint = surveyed spot

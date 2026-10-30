@@ -58,7 +58,7 @@ class OaEvalNode(Node):
         dp('corridor_wall_height_m', 2.4384)
         dp('mouth_offset_m', 2.5)
         dp('obstacles', [0.0], _DA)
-        dp('obstacle_depth_m', 0.4)
+        dp('obstacle_depth_m', 0.1)        # boards 5-10 cm thick
         dp('gps_offset_m', 0.0)
         dp('altitude_m', 1.5)
         dp('drone_width_m', 0.55)

@@ -43,7 +43,8 @@
 #
 # Wall sources (corridor_walls_from): depth (stereo, needs texture: on white
 # walls only the sponsor logos give depth), rgb (wall bases against the
-# ground, floor_boundary.py; scaled by the camera height), or auto: both every
+# ground, floor_boundary.py; scaled by the camera height; a white board's
+# base is not taken for a black wall's: test_floor_boundary), or auto: both every
 # frame, the one that sees more walls wins (depth on a tie). Obstacles always
 # come from depth, also between RGB-fitted walls. A wall end measured by one
 # source is dropped if the other still sees both walls with no end in range
@@ -94,6 +95,7 @@ class CorridorPerceptionNode(Node):
         self.declare_parameter('corridor_slice_hi_m', d.slice_hi_m)
         self.declare_parameter('corridor_max_range_m', d.max_range_m)
         self.declare_parameter('corridor_obstacle_range_m', d.obstacle_range_m)
+        self.declare_parameter('corridor_obstacle_depth_m', d.obstacle_depth_m)
         self.declare_parameter('corridor_walls_from', 'auto')
         self.declare_parameter('corridor_rgb_floor_thr', 16.0)
         self.declare_parameter('corridor_rgb_min_wall_dist_m', 0.375)
@@ -107,6 +109,7 @@ class CorridorPerceptionNode(Node):
             slice_hi_m=float(gp('corridor_slice_hi_m')),
             max_range_m=float(gp('corridor_max_range_m')),
             obstacle_range_m=float(gp('corridor_obstacle_range_m')),
+            obstacle_depth_m=float(gp('corridor_obstacle_depth_m')),
             max_single_offset_m=float(gp('corridor_max_single_offset_m')),
             unfitted_margin_m=float(gp('corridor_unfitted_margin_m')),
         )

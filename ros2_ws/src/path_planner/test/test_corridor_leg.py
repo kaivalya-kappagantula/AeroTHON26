@@ -165,3 +165,35 @@ def test_unpassable_obstacle_blocks(node, monkeypatch):
     assert not ok and msg.startswith("BLOCKED"), msg
     _, obst = clearance(world)
     assert obst[0] > 0.3                             # stopped well short
+
+
+class Beside(World):
+    """The GPS line runs 2.5 m beside the real corridor (e.g. a banner fix
+    20 deg off): the walls seen there never agree with the line."""
+
+    def perception(self):
+        m = super().perception()
+        if m["walls"]:
+            m.update(wall_left=m["wall_left"] + 2.5, wall_right=m["wall_right"] + 2.5)
+        return m
+
+
+class Blind(World):
+    def perception(self):
+        m = super().perception()
+        m.update(walls=0, wall_left=float("nan"), wall_right=float("nan"))
+        return m
+
+
+def test_beside_the_corridor_is_not_a_success(node, monkeypatch):
+    world = Beside([], gps_error=0.0, y0=0.0)
+    ok, msg = fly(node, world, monkeypatch)
+    assert not ok and msg.startswith("NOT_IN_CORRIDOR"), msg
+    # caught early: 2.5 m past the mouth, not at the far end
+    assert max(x for x, y, a in world.track) < 2.5 + 1.0
+
+
+def test_no_walls_at_all_flies_the_gps_line(node, monkeypatch):
+    # no wall in view proves nothing: as designed, the GPS line is flown
+    ok, msg = fly(node, Blind([], gps_error=0.0, y0=0.0), monkeypatch)
+    assert ok, msg

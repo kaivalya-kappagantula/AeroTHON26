@@ -16,11 +16,22 @@
 # /boot/firmware/config.txt)
 #   FC: SERIAL2_PROTOCOL=2, SERIAL2_BAUD=921
 # USB instead: fcu_url:=/dev/ttyACM0:115200
+#
+# Live view + logs (one folder per flight, ~/aerothon_logs/mission_<time>/):
+#   live_view:=true (default)  Cam3 at http://<pi>:8080/, OAK colour at
+#                              http://<pi>:8081/ (640 px, <= 10 fps, latest
+#                              frame only: a slow viewer never lags or holds up
+#                              the mission); both streams also saved there as
+#                              .mjpeg (ffplay -f mjpeg <file>)
+#   record:=true (default)     rosbag of telemetry, MAVROS state/position,
+#                              perception results and /rosout (no images)
 
 import os
+import time
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     TimerAction,
 )
@@ -65,6 +76,15 @@ def generate_launch_description():
         "awb_mode", default_value="5",
         description="Cam3 white balance (5 = daylight: keeps the red mat's colour stable, "
                     "as the arena test flights; 0 = auto)")
+
+    live_view_arg = DeclareLaunchArgument(
+        "live_view", default_value="true", choices=["true", "false"],
+        description="Stream Cam3 (:8080) and OAK colour (:8081) to a browser, and save them")
+    record_arg = DeclareLaunchArgument(
+        "record", default_value="true", choices=["true", "false"],
+        description="rosbag of the mission's non-image topics")
+    log_dir = os.path.expanduser(
+        os.path.join("~", "aerothon_logs", time.strftime("mission_%Y%m%d_%H%M%S")))
 
     # ================================================================
     # MAVROS (Jazzy ships apm.launch as XML -> AnyLaunchDescriptionSource)
@@ -196,12 +216,43 @@ def generate_launch_description():
         ],
     )
 
+    # ================================================================
+    # Live view (watch only) + flight logs
+    # ================================================================
+    def live_view_of(label, topic, port, downward):
+        return Node(
+            package="qr_detection",
+            executable="live_view_node",
+            name=f"live_view_{'down' if downward else 'oak'}",
+            output="screen",
+            parameters=[{"label": label, "topic": topic, "port": port,
+                         "downward": downward, "record_dir": log_dir}],
+            condition=IfCondition(LaunchConfiguration("live_view")),
+        )
+
+    live_view_down = live_view_of("Cam3 (down)", "/down_frame", 8080, True)
+    live_view_oak = live_view_of("OAK (forward)", "/oak/rgb/image_raw", 8081, False)
+
+    record = ExecuteProcess(
+        cmd=["ros2", "bag", "record", "-o", os.path.join(log_dir, "bag"),
+             "/rosout", "/mission/telemetry", "/mission/status",
+             "/mavros/state", "/mavros/battery", "/mavros/global_position/global",
+             "/mavros/global_position/rel_alt", "/mavros/local_position/pose",
+             "/corridor/perception", "/corridor/banner", "/corridor/banner_blue",
+             "/corridor/ground_marker", "/qr_scanner/status", "/qr_scanner/delivery_id",
+             "/red_zone/sighting", "/red_zone/zones", "/payload/release"],
+        output="log",
+        condition=IfCondition(LaunchConfiguration("record")),
+    )
+
     return LaunchDescription([
         launch_mavros_arg,
         fcu_url_arg,
         launch_camera_arg,
         camera_arg,
         awb_mode_arg,
+        live_view_arg,
+        record_arg,
 
         mavros_launch,
         payload_node,
@@ -214,6 +265,9 @@ def generate_launch_description():
         avoidance_launch,
         banner_node,
         banner_blue_node,
+        live_view_down,
+        live_view_oak,
+        record,
 
         # Mission node last; it also waits for MAVROS + the pilot's switch.
         TimerAction(period=5.0, actions=[mission_node]),

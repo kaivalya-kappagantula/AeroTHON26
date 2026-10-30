@@ -414,6 +414,7 @@ def test_banner_out_of_view_from_start_altitude(node, monkeypatch):
     # From 6 m the banner (bottom 2.5 m) is below the view: the sweep
     # there finds nothing, the next altitude (3.0 m) does; then it gets
     # below the banner before approaching.
+    node[0]._c_width = 2.0                     # the planner knows the width
     world = World([(0.0, 2.0)], length=5.0, banner_h=2.5, pose=(-8.0, 0.0, 6.0, 0.0))
     ok, msg = fly(node, world, monkeypatch)
     assert ok, msg
@@ -424,6 +425,7 @@ def test_banner_out_of_view_from_start_altitude(node, monkeypatch):
 
 def test_enters_the_corridor_with_the_banner_not_its_neighbour(node, monkeypatch):
     # Two corridors; the vehicle starts in line with the one WITHOUT the banner.
+    node[0]._c_width = 2.0                     # the planner knows the width
     world = World([(0.0, 2.0), (2.6, 2.0)], length=6.0, banner_h=3.0,
                   pose=(-8.0, 2.6, 1.8, 0.0))
     ok, msg = fly(node, world, monkeypatch)

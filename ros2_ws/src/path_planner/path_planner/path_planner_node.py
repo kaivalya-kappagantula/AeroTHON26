@@ -21,6 +21,13 @@
 #                                    at side_clearance_m; no gap -> BLOCKED.
 #                                    The caller places the drone in front of
 #                                    the exit corridor facing it first.
+#   SURVEYED corridors (mission_common/survey.py, once mission_node publishes
+#   /mission/survey_offset): entry and exit skip the banner search: to the
+#   line-up point entry_preentry_m straight out from the surveyed mouth,
+#   down to half the banner height, look for the banner for
+#   survey_banner_wait_s — seen: its bearing moves the surveyed line
+#   sideways (survey_banner_* below) and its bottom edge sets the altitude;
+#   NOT seen: in on the surveyed line anyway. Walls correct it as always.
 #   /path_planner/run_lawnmower    — BCD lawnmower search (arena_speed_ms)
 #   /path_planner/stop             — cancel the active leg and hold position
 #
@@ -80,6 +87,7 @@
 #   ros2 run path_planner path_planner_node
 
 import math
+import statistics
 import threading
 import time
 from dataclasses import replace
@@ -98,6 +106,7 @@ from sensor_msgs.msg import NavSatFix, NavSatStatus
 from mission_common import banner_msg
 from mission_common import corridor_msg
 from mission_common import mavros_utils as mav
+from mission_common import survey as site_survey
 from mission_common.config_loader import load_mission_config
 from path_planner.corridor_follow import (
     FollowParams,
@@ -110,6 +119,7 @@ from path_planner.entry_corridor import (
     BannerFix,
     EntryParams,
     approach_command,
+    banner_on_survey,
     banner_view,
     point_out,
     search_altitudes,
@@ -205,6 +215,10 @@ class PathPlannerNode(Node):
         # last ~2.5 m of a wide corridor has no wall in view) this is used.
         self._measured_len = None
         self._marker = "none"
+        # Site survey: loaded now, used only once mission_node has anchored it
+        # on today's home fix (/mission/survey_offset) — SITL / another site: off.
+        self._survey_all = site_survey.load(self.cfg)
+        self._survey = None
 
         # ----- Run control -----
         self._run_lock = threading.Lock()       # one leg at a time
@@ -226,6 +240,10 @@ class PathPlannerNode(Node):
             self.create_subscription(Float32MultiArray, topic,
                                      lambda m, c=colour: self._banner_cb(m, c), 10)
         self.create_subscription(String, "/corridor/ground_marker", self._marker_cb, 10)
+        latched = QoSProfile(reliability=ReliabilityPolicy.RELIABLE,
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                             history=HistoryPolicy.KEEP_LAST, depth=1)
+        self.create_subscription(String, "/mission/survey_offset", self._survey_cb, latched)
 
         # Leg services block for the whole leg: reentrant group + multithreaded
         # executor so /stop and the subscriptions keep running meanwhile.
@@ -267,8 +285,10 @@ class PathPlannerNode(Node):
     def _declare_corridor_params(self):
         d = FollowParams()
         decl = {
-            "corridor_altitude_m": 1.5,
+            "corridor_altitude_m": 1.2192,     # middle of the 8 ft walls
             "corridor_follow_speed_ms": 0.5,
+            "corridor_exit_speed_ms": 0.4,      # exit corridor (obstacles); entry and
+                                                # the other legs: corridor_follow_speed_ms
             "corridor_rate_hz": 5.0,
             "corridor_exit_clearance_m": 1.0,
             "corridor_max_overrun_m": 3.0,
@@ -289,8 +309,22 @@ class PathPlannerNode(Node):
                                                 # this much air each side, else fly over
             "body_above_camera_m": 0.20,        # PLACEHOLDER: camera to the drone's top
                                                 # (props / GPS mast): banner ceiling
+            "corridor_verify_min_frames": 3,    # past the mouth, walls seen in at least
+            "corridor_verify_min_seen": 6,      # min_seen frames but fewer than min_frames
+                                                # agreeing with the line = NOT_IN_CORRIDOR
+                                                # (beside it); no walls seen = unverified
+            "corridor_verify_by_m": 2.5,        # checked this far past the mouth + at the end
             "banner_climb_after_m": 0.7,        # no climb until this far past the mouth
                                                 # (half the drone's length + GPS error)
+            # Surveyed corridors (header): the banner seen from the line-up point
+            "survey_banner_wait_s": 4.0,        # look this long at the line-up point
+            "survey_banner_min_frames": 3,      # fewer locked frames = not seen
+            "survey_banner_max_shift_m": 1.5,   # banner centre further off the surveyed
+                                                # line: not this corridor's — ignored
+            "survey_lateral_sd_m": 0.7,         # surveyed line vs today's GPS (anchored)
+            "survey_banner_sd_m": 0.3,          # banner bearing at 2.5 m (compass error)
+            "survey_max_correction_m": 1.5,     # walls never move the line further
+            "survey_banner_bottom_m": 2.4384,   # banner not measured: on 8 ft walls
             "drone_width_m": d.drone_width_m,
             "side_clearance_m": d.side_clearance_m,
             "corridor_lookahead_m": d.lookahead_m,
@@ -319,6 +353,7 @@ class PathPlannerNode(Node):
         )
         self._c_alt = float(gp("corridor_altitude_m"))
         self._c_speed = float(gp("corridor_follow_speed_ms"))
+        self._c_exit_speed = float(gp("corridor_exit_speed_ms"))
         self._c_period = 1.0 / float(gp("corridor_rate_hz"))
         self._c_exit_clear = float(gp("corridor_exit_clearance_m"))
         self._c_overrun = float(gp("corridor_max_overrun_m"))
@@ -332,7 +367,17 @@ class PathPlannerNode(Node):
         self._exit_pass_side = float(gp("exit_pass_side_clearance_m"))
         self._body_above_cam = float(gp("body_above_camera_m"))
         self._banner_climb_after = float(gp("banner_climb_after_m"))
+        self._c_verify_min = int(gp("corridor_verify_min_frames"))
+        self._c_verify_seen = int(gp("corridor_verify_min_seen"))
+        self._c_verify_by = float(gp("corridor_verify_by_m"))
         self._banner_bottom = None      # bottom edge height of the banner last fixed (m)
+        self._sv_wait = float(gp("survey_banner_wait_s"))
+        self._sv_min_frames = int(gp("survey_banner_min_frames"))
+        self._sv_max_shift = float(gp("survey_banner_max_shift_m"))
+        self._sv_lat_sd = float(gp("survey_lateral_sd_m"))
+        self._sv_banner_sd = float(gp("survey_banner_sd_m"))
+        self._sv_max_corr = float(gp("survey_max_correction_m"))
+        self._sv_bottom = float(gp("survey_banner_bottom_m"))
         f = FuseParams()
         for k, v in vars(f).items():
             self.declare_parameter(f"corridor_fuse_{k}", v)
@@ -349,7 +394,8 @@ class PathPlannerNode(Node):
             raise ValueError("corridor_altitude_m must not exceed corridor_max_altitude_m")
         self.get_logger().info(
             f"[path_planner] corridor: alt {self._c_alt:.2f} m (max "
-            f"{self._follow.max_altitude_m:.2f}), {self._c_speed:.2f} m/s, drone "
+            f"{self._follow.max_altitude_m:.2f}), {self._c_speed:.2f} m/s (exit "
+            f"{self._c_exit_speed:.2f}), drone "
             f"width {self._follow.drone_width_m:.2f} m + {self._follow.side_clearance_m:.2f} m "
             f"clearance, perception {'REQUIRED' if self._c_need_perception else 'OFF (GPS centreline)'}; "
             f"GPS centreline primary, walls correct it by <= {self._fuse.max_correction_m:.1f} m")
@@ -397,6 +443,22 @@ class PathPlannerNode(Node):
 
     def _marker_cb(self, msg: String):
         self._marker = msg.data
+
+    def _survey_cb(self, msg: String):
+        if self._survey_all is None or msg.data == "off":
+            self._survey = None
+            self.get_logger().info("[path_planner] site survey not in use — banners searched")
+            return
+        try:
+            d_e, d_n = (float(x) for x in msg.data.split(","))
+        except ValueError:
+            self.get_logger().error(f"[path_planner] bad /mission/survey_offset '{msg.data}'")
+            return
+        self._survey = self._survey_all.shifted(d_e, d_n)
+        self.get_logger().info(
+            f"[path_planner] site survey IN USE (shifted E {d_e:+.2f} N {d_n:+.2f} m): "
+            + ", ".join(f"{k} corridor {'surveyed' if getattr(self._survey, k) else 'NOT surveyed'}"
+                        for k in ("entry", "exit")))
 
     # ===================================================================
     # Shared helpers
@@ -603,30 +665,42 @@ class PathPlannerNode(Node):
                                "running and the OAK colour stream on (i_pipeline_type RGBD)?")
             time.sleep(0.1)
         alt0 = self._rel_alt if self._rel_alt is not None else self.cfg.cruise_altitude_m
-        self._set_speed(self._c_speed, alt0)
+        speed = self._c_exit_speed if obstacles else self._c_speed
+        self._set_speed(speed, alt0)
 
-        ok, msg = self._banner_search(leg)
-        if not ok:
-            return False, msg
-        ok, msg, nominal, track, entry = self._banner_approach(leg)
-        if not ok:
-            return False, msg
+        surveyed = None if self._survey is None else \
+            getattr(self._survey, "entry" if colour == "green" else "exit")
+        if surveyed is not None:
+            ok, msg, nominal, track, entry = self._surveyed_approach(leg, surveyed)
+            if not ok:
+                return False, msg
+        else:
+            ok, msg = self._banner_search(leg)
+            if not ok:
+                return False, msg
+            ok, msg, nominal, track, entry = self._banner_approach(leg)
+            if not ok:
+                return False, msg
 
         self._leg_deadline = time.time() + self.cfg.corridor_timeout_s
         axis_yaw = track.axis_yaw
         axis = (math.sin(axis_yaw), math.cos(axis_yaw))         # (north, east)
-        # Where it ends if no wall end is measured: the entry corridor's
-        # measured length (exit corridor), else the nominal (22 ft) length.
-        expected = (self._measured_len if obstacles else None) or \
+        # Where it ends if no wall end is measured: the surveyed length, else
+        # the entry corridor's measured length (exit corridor), else the
+        # nominal (22 ft) length.
+        expected = surveyed.length if surveyed is not None else \
+            (self._measured_len if obstacles else None) or \
             (self._c_nominal_len if self._c_nominal_len > 0.0 else None)
         self.get_logger().info(
             f"[path_planner] {leg}: expected length "
             + (f"{expected:.1f} m" if expected else "unknown — the wall end must be seen")
-            + (" (the entry corridor's)" if obstacles and self._measured_len else ""))
+            + (" (surveyed)" if surveyed is not None else
+               " (the entry corridor's)" if obstacles and self._measured_len else ""))
         result = self._follow_corridor(leg, entry, axis, axis_yaw, None, nominal=nominal,
                                        track=track, obstacles=obstacles, alt_gate=True,
                                        climb=climb, expected_len=expected,
-                                       mouth_at=self._entry.preentry_m,
+                                       mouth_at=track.pivot if surveyed is not None
+                                       else self._entry.preentry_m,
                                        wall_guard=obstacles, banner_bottom=self._banner_bottom,
                                        pass_side_clearance=self._exit_pass_side
                                        if obstacles else None)
@@ -652,7 +726,7 @@ class PathPlannerNode(Node):
             f"— backing out {back:.1f} m before the climb")
         mav.goto(self, lat, lon, alt, publish_count=5,
                  yaw_enu=math.atan2(axis[0], axis[1]))
-        deadline = time.time() + 10.0 + 4.0 * back / max(self._c_speed, 0.1)
+        deadline = time.time() + 10.0 + 4.0 * back / max(min(self._c_speed, self._c_exit_speed), 0.1)
         while time.time() < deadline and not self._cancel.is_set():
             if mav.haversine(*self._gps, lat, lon) < 0.3:
                 break
@@ -742,6 +816,167 @@ class PathPlannerNode(Node):
             f"({alt:.1f} m) — turning to it")
         mav.goto(self, self._gps[0], self._gps[1], alt, publish_count=5, yaw_enu=yaw)
         return True, "OK"
+
+    def _surveyed_approach(self, leg, c):
+        """Surveyed corridor c (survey.Corridor, anchored): to the line-up
+        point entry_preentry_m straight out from its mouth at this altitude,
+        nose down the corridor; down to half the expected banner height;
+        look for the banner survey_banner_wait_s. Seen: its centre moves the
+        surveyed line sideways (weighted: survey_lateral_sd_m vs
+        survey_banner_sd_m, at most survey_banner_max_shift_m) and its bottom
+        edge sets the altitude. Not seen: in on the surveyed line, altitude
+        from survey_banner_bottom_m. Then line up and settle as the banner
+        approach does (walls correct the line). Same return as
+        _banner_approach."""
+        ep, fp, sv = self._entry, self._follow, self._survey
+        self._leg_deadline = time.time() + ep.approach_timeout_s
+        yaw = c.axis_yaw
+
+        def fail(text):
+            return False, text, None, None, None
+
+        here = sv.local(*self._gps)
+        lineup = c.world(-ep.preentry_m)
+        if c.crosses(here, lineup, 0.5):
+            s_h, y_h = c.frame(here)
+            return fail(f"WRONG_SIDE {leg}: the way to the surveyed line-up point crosses the "
+                        f"corridor (drone at s={s_h:+.1f} m, y={y_h:+.1f} m from its mouth) — "
+                        "start in front of its mouth")
+
+        def goto_hold(point, alt, until, label):
+            """Fly to / hold at point (survey frame), nose down the corridor,
+            until until() or the leg deadline. Obstacle sensor dead too long
+            -> SENSOR_TIMEOUT. None = done, else the failure message."""
+            lat, lon = sv.gps(point)
+            bad_since = None
+            while True:
+                t0 = time.time()
+                if self._cancel.is_set() or not rclpy.ok():
+                    return f"CANCELLED {leg}"
+                if t0 > self._leg_deadline:
+                    return f"LEG_TIMEOUT {leg} {label}"
+                if not self._sensor_ok():
+                    if bad_since is None:
+                        bad_since = t0
+                        self.get_logger().warn(
+                            f"[path_planner] {leg}: obstacle sensor not live — holding")
+                        self._hold(self._rel_alt or alt, yaw)
+                    if t0 - bad_since > self.cfg.sensor_fail_timeout_s:
+                        return f"SENSOR_TIMEOUT {leg} {label}"
+                    self._sleep_rest(t0)
+                    continue
+                bad_since = None
+                mav.goto(self, lat, lon, alt, publish_count=1, yaw_enu=yaw, log=False)
+                if until():
+                    return None
+                self._sleep_rest(t0)
+
+        def at(point, alt, tol=0.4):
+            return lambda: (mav.haversine(*self._gps, *sv.gps(point)) <= tol and
+                            self._rel_alt is not None and
+                            abs(self._rel_alt - alt) <= 2 * fp.alt_tol_m)
+
+        alt0 = self._rel_alt if self._rel_alt is not None else ep.search_alt_max_m
+        self.get_logger().info(
+            f"[path_planner] {leg}: SURVEYED corridor ({c.length:.1f} m, heading "
+            f"{(90.0 - math.degrees(yaw)) % 360.0:.0f} deg) — to its line-up point "
+            f"{ep.preentry_m:.1f} m out ({math.dist(here, lineup):.1f} m from here) at "
+            f"{alt0:.1f} m")
+        err = goto_hold(lineup, alt0, at(lineup, alt0), "to the line-up point")
+        if err:
+            return fail(err)
+        nominal = min(target_altitude(self._sv_bottom, ep), fp.max_altitude_m)
+        err = goto_hold(lineup, nominal, at(lineup, nominal, tol=0.6), "down to the corridor "
+                                                                       "altitude")
+        if err:
+            return fail(err)
+
+        # --- the banner, straight ahead under the survey ---
+        lats, heights, frame_t = [], [], None
+        look_end = time.time() + self._sv_wait
+
+        def looked():
+            nonlocal frame_t
+            bm = self._banner_fresh(0.5)
+            if bm is not None and bm[0]["state"] == banner_msg.LOCK and bm[1] != frame_t:
+                frame_t = bm[1]
+                s_d, y_d = c.frame(sv.local(*self._gps))
+                r = banner_on_survey(bm[0], s_d, y_d, yaw, self._yaw_enu or yaw,
+                                     self._rel_alt or nominal)
+                if r is not None:
+                    lats.append(r[0])
+                    if not math.isnan(r[1]):
+                        heights.append(r[1])
+            return time.time() >= look_end or len(lats) >= 15
+
+        err = goto_hold(lineup, nominal, looked, "banner look")
+        if err:
+            return fail(err)
+        shift, lsd, colour = 0.0, self._sv_lat_sd, self._banner_colour
+        if len(lats) >= self._sv_min_frames:
+            yb = statistics.median(lats)
+            if abs(yb) <= self._sv_max_shift:
+                w = lsd ** 2 / (lsd ** 2 + self._sv_banner_sd ** 2)
+                shift = w * yb
+                lsd = math.sqrt(1.0 / (1.0 / lsd ** 2 + 1.0 / self._sv_banner_sd ** 2))
+                self.get_logger().info(
+                    f"[path_planner] {leg}: {colour} BANNER seen ({len(lats)} frames): its "
+                    f"centre is {yb:+.2f} m (+ left) off the surveyed line — line moved "
+                    f"{shift:+.2f} m")
+            else:
+                self.get_logger().warn(
+                    f"[path_planner] {leg}: {colour} banner seen {yb:+.2f} m off the surveyed "
+                    f"line (> {self._sv_max_shift:.1f} m: not this corridor's?) — ignored, "
+                    "entering on the surveyed line")
+        else:
+            self.get_logger().warn(
+                f"[path_planner] {leg}: {colour} banner NOT seen ({len(lats)} frames in "
+                f"{self._sv_wait:.0f} s) — entering on the surveyed GPS line")
+        bottom = self._sv_bottom
+        if len(heights) >= self._sv_min_frames:
+            h = statistics.median(heights)
+            if 1.0 <= h <= fp.max_altitude_m + 1.5:
+                bottom = h
+                self.get_logger().info(
+                    f"[path_planner] {leg}: banner bottom edge measured {h:.2f} m")
+            else:
+                self.get_logger().warn(
+                    f"[path_planner] {leg}: banner bottom edge measured {h:.2f} m — implausible, "
+                    f"using {bottom:.2f} m")
+        nominal = min(target_altitude(bottom, ep), fp.max_altitude_m)
+        self._banner_bottom = bottom
+
+        # --- line up on the (corrected) line, walls correct it meanwhile ---
+        lineup = c.world(-ep.preentry_m, shift)
+        err = goto_hold(lineup, nominal, at(lineup, nominal, tol=0.3), "line-up")
+        if err:
+            return fail(err)
+        entry = self._gps
+        s_d, y_d = c.frame(sv.local(*entry))
+        track = GpsCorridorTrack(fp, self._fuse, yaw, self._c_width,
+                                 centre0=shift - y_d, pivot=-s_d,
+                                 lateral_sd_m=lsd, max_correction_m=self._sv_max_corr)
+        self._perception = None
+        settle_end = time.time() + ep.lineup_settle_s
+
+        def settled():
+            d_n, d_e = mav.ne_offset(entry[0], entry[1], self._gps[0], self._gps[1])
+            track.set_pose(d_n * math.sin(yaw) + d_e * math.cos(yaw),
+                           d_n * math.cos(yaw) - d_e * math.sin(yaw), time.time())
+            pm, self._perception = self._perception, None
+            if pm is not None:
+                track.update(pm[0], pm[1], yaw if math.isnan(pm[0]["cam_yaw"])
+                             else pm[0]["cam_yaw"])
+            return time.time() >= settle_end
+
+        err = goto_hold(lineup, nominal, settled, "line-up settle")
+        if err:
+            return fail(err)
+        self.get_logger().info(
+            f"[path_planner] {leg}: lined up on the surveyed line (offset {-track.centre:+.2f} m; "
+            f"walls: {track.accepted} frames agreed, {track.rejected} rejected, line corrected "
+            f"{track.correction:+.2f} m) -> corridor altitude {nominal:.2f} m")
+        return True, "OK", nominal, track, entry
 
     def _banner_approach(self, leg):
         """Fly toward the banner until it is fixed (BannerFix: its shape read
@@ -1019,6 +1254,38 @@ class PathPlannerNode(Node):
         path = (NAN_F, 0.0)         # (path_dist, time): clear distance ahead of the nose
         self._last_s = None         # progress / mouth for the caller (exit failsafe)
         self._last_mouth = None
+        # Evidence it is IN the corridor: frames past the mouth whose walls
+        # agreed with the line (in_walls). A wrong line (e.g. a banner heading
+        # 20 deg off) flies BESIDE the corridor: walls are seen but rejected,
+        # and every exit test below (distance, expected length) still passes.
+        # Walls seen, (almost) none agreeing -> NOT_IN_CORRIDOR. No walls seen
+        # at all proves nothing either way (the OAK-D often sees none): the
+        # GPS line is flown, as designed, and the leg is logged unverified.
+        in_walls = 0
+        seen_walls = 0              # past the mouth with any wall in view
+        verify = self._c_need_perception and self._c_verify_min > 0
+
+        def beside():
+            return verify and seen_walls >= self._c_verify_seen and \
+                in_walls < self._c_verify_min
+
+        def not_in_corridor(why):
+            return False, (f"NOT_IN_CORRIDOR {leg} at s={self._last_s:.1f} m: {why} — only "
+                           f"{in_walls} frame(s) past the mouth had walls agreeing with the "
+                           f"corridor line ({seen_walls} with walls in view, "
+                           f"{track.rejected} rejected in all): flying beside it?")
+
+        def done(msg):
+            if beside():
+                return not_in_corridor("reached the end")
+            if verify and in_walls < self._c_verify_min:
+                self.get_logger().warn(
+                    f"[path_planner] {leg}: UNVERIFIED — only {seen_walls} frame(s) past the "
+                    "mouth saw a wall: flown on the GPS line alone")
+            else:
+                self.get_logger().info(f"[path_planner] {leg}: in the corridor — {in_walls} "
+                                       f"frame(s) with walls agreeing past the mouth")
+            return True, msg
 
         def path_cap(step):
             """Exit corridor (wall_guard): never step to within
@@ -1057,6 +1324,10 @@ class PathPlannerNode(Node):
                 walls_ok = track.update(m, pm[1], cam_yaw)
                 if walls_ok and not math.isnan(m["mouth_dist"]):
                     mouth_s = s + m["mouth_dist"]
+                m_ref = mouth_s if not math.isnan(mouth_s) else mouth_at
+                if m_ref is None or s >= m_ref:
+                    seen_walls += int(m["walls"]) > 0
+                    in_walls += bool(walls_ok)
                 if walls_ok and not math.isnan(m["walls_end"]):
                     # Only a wall end near the known end can be the exit
                     # (surveyed length, or mouth + expected length: white
@@ -1104,27 +1375,29 @@ class PathPlannerNode(Node):
                 exit_s = s
                 self.get_logger().info(f"[path_planner] {leg}: EXIT marker (blue) at s={s:.1f} m")
             if exit_s is not None and s >= exit_s + self._c_exit_clear:
-                return True, f"OK {leg} complete (exit marker at {exit_s:.1f} m)"
+                return done(f"OK {leg} complete (exit marker at {exit_s:.1f} m)")
             mouth_ref = mouth_s if not math.isnan(mouth_s) else mouth_at
             self._last_mouth = mouth_ref
+            if beside() and s >= (mouth_ref or 0.0) + self._c_verify_by:
+                return not_in_corridor(f"{self._c_verify_by:.1f} m past the mouth")
             if walls_end_s is not None and s >= walls_end_s + self._c_exit_clear:
                 if mouth_ref is not None and length is None:
                     self._measured_len = walls_end_s - mouth_ref
                     self.get_logger().info(
                         f"[path_planner] {leg}: corridor {self._measured_len:.1f} m long")
-                return True, f"OK {leg} complete (walls ended at {walls_end_s:.1f} m)"
+                return done(f"OK {leg} complete (walls ended at {walls_end_s:.1f} m)")
             expected_s = (mouth_ref + expected_len) if expected_len and mouth_ref is not None \
                 else None
             if walls_end_s is None and expected_s is not None and \
                     s >= expected_s + self._c_exit_clear and memory.active is None:
-                return True, (f"OK {leg} complete (expected end at {expected_s:.1f} m, "
-                              "no wall end measured)")
+                return done(f"OK {leg} complete (expected end at {expected_s:.1f} m, "
+                            "no wall end measured)")
             if expected_s is not None and s >= expected_s + self._c_overrun:
-                return True, f"OK {leg} complete (overrun {s:.1f} m)"
+                return done(f"OK {leg} complete (overrun {s:.1f} m)")
             if length is not None and s >= length + self._c_exit_clear:
                 if self._c_need_perception:
                     self.get_logger().warn(f"[path_planner] {leg}: no exit marker — exit by distance")
-                return True, f"OK {leg} complete (by distance {s:.1f} m)"
+                return done(f"OK {leg} complete (by distance {s:.1f} m)")
 
             # --- health: GPS fresh, obstacle sensor live, perception coming ---
             perc_ok = not (self._c_need_perception and obstacles) or \

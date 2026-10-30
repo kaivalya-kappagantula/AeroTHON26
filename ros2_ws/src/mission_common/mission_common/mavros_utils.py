@@ -122,11 +122,12 @@ def disarm(node: Node, timeout: float = 10.0) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Altitude ceiling — competition rule: never above 10 m. Every altitude the
-# companion commands goes through takeoff() or goto(), and both clamp to this.
-# Backed up on the FC by the altitude fence (FENCE_ALT_MAX).
+# Altitude ceiling — never above 9.5 m (team rule, under the 10 m competition
+# limit; the arena flies at 9.25). Every altitude the companion commands goes
+# through takeoff() or goto(), and both clamp to this. Backed up on the FC by
+# the altitude fence (FENCE_ALT_MAX).
 # ---------------------------------------------------------------------------
-MAX_ALT_M = 10.0
+MAX_ALT_M = 9.5
 
 
 def clamp_alt(node: Node, altitude_m: float) -> float:

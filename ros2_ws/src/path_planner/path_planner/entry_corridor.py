@@ -284,3 +284,27 @@ def approach_command(seen: bool, elev_bottom: float, dist: float, alt: float,
         # off to see it again.
         return ApproachCommand(-0.5 * lookahead, hold_alt, "backoff")
     return ApproachCommand(0.0, hold_alt, "hold")
+
+
+def banner_on_survey(b: dict, s: float, y: float, axis_yaw: float, yaw: float,
+                     alt: float, max_angle_deg: float = 60.0):
+    """A surveyed corridor's banner (/corridor/banner message fields) seen
+    from (s, y) in the corridor's surveyed frame (s along it from the
+    surveyed mouth, < 0 = in front; y + = left), the nose at world yaw and
+    the camera at alt when the message's own cam_yaw / cam_alt are NaN.
+    The mouth's distance comes from the survey, the direction from the
+    camera: the banner centre's lateral offset from the surveyed line (+ =
+    left; the GPS / survey error there) and its bottom edge height (NaN if
+    not in view). None: no bearing, too close, or seen too far to the side."""
+    f = -s
+    if f < 0.5 or not _ok(b.get("bearing")):
+        return None
+    cam_yaw = yaw if not _ok(b.get("cam_yaw")) else b["cam_yaw"]
+    cam_alt = alt if not _ok(b.get("cam_alt")) else b["cam_alt"]
+    delta = _wrap(cam_yaw + b["bearing"] - axis_yaw)
+    if abs(delta) > math.radians(max_angle_deg):
+        return None
+    lateral = y + f * math.tan(delta)
+    eb = b.get("elev_bottom")
+    height = cam_alt + f / math.cos(delta) * math.tan(eb) if _ok(eb) else NAN
+    return lateral, height

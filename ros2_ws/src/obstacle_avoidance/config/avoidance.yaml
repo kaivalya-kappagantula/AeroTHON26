@@ -76,7 +76,7 @@
                                     # width/2 - this of the nose (< drone width +
                                     # 2 x side clearance = 0.83 m, see geometry)
     corridor_walls_from: auto       # depth | rgb | auto (both, more walls wins;
-                                    # white walls give depth only on the logos)
+                                    # plain black walls give little stereo depth)
     corridor_rgb_floor_thr: 16.0    # RGB: colour/texture distance from the floor
                                     # sample (corridor_bench --floor-thr)
     corridor_rgb_min_wall_dist_m: 0.375  # RGB "wall" closer than this is a false
@@ -85,6 +85,9 @@
     corridor_slice_hi_m: 0.50       # lower than -0.35 m is passed over
     corridor_max_range_m: 5.0
     corridor_obstacle_range_m: 3.5
+    corridor_obstacle_depth_m: 0.4  # obstacle = points within this behind its
+                                    # nearest face: 5-10 cm boards + stereo noise
+                                    # (was 0.8 for deep boxes)
 
     # --- green entrance banner (banner_node, OAK colour camera) ---
     # Detector/tracker values are green_detect.py's defaults (bench-tuned on

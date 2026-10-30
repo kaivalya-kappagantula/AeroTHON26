@@ -10,8 +10,12 @@
 #   IDLE -> TAKEOFF -> SCAN_REFERENCE_QR -> ENTRY_CORRIDOR -> ARENA_SEARCH
 #        -> TARGET_FOUND -> DROPPING -> CORRIDOR_2_TRANSIT -> HOMING -> LANDING
 #        -> LANDED
-#   ARENA_SEARCH -> CORRIDOR_2_TRANSIT  (search_exhausted: no match or no
-#                                        target, keep payload)
+#   ARENA_SEARCH -> CORRIDOR_2_TRANSIT  (search_exhausted: no match and no
+#                                        QR seen to drop on at random)
+#   TARGET_FOUND / DROPPING -> CORRIDOR_2_TRANSIT  (drop_failed: the drop
+#                                        phase failed — moving on)
+# PHASE FAILSAFE: a failure in a phase (not the pilot, FC, battery or a dead
+# sensor) moves the mission on to the next phase — mission_node._phase.
 # Test flights land straight after the phase they test:
 #   TAKEOFF -> LANDING            (takeoff_test_done: takeoff_test)
 #   SCAN_REFERENCE_QR -> LANDING  (qr_test_done: qr_scan_mission_node)
@@ -65,6 +69,7 @@ class MissionSM(StateMachine):
     search_exhausted      = ARENA_SEARCH.to(CORRIDOR_2_TRANSIT)
     drop_position_reached = TARGET_FOUND.to(DROPPING)
     drop_complete         = DROPPING.to(CORRIDOR_2_TRANSIT)
+    drop_failed           = TARGET_FOUND.to(CORRIDOR_2_TRANSIT) | DROPPING.to(CORRIDOR_2_TRANSIT)
     c2_complete           = CORRIDOR_2_TRANSIT.to(HOMING)
     home_reached          = HOMING.to(LANDING)
     touchdown             = LANDING.to(LANDED)

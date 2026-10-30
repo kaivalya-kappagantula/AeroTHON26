@@ -30,9 +30,11 @@ The AeroTHON 2026 mission, flown fully autonomously, in **under 15 minutes**:
    (Descending is only allowed for the drop.)
 5. **Corridor 2** (with obstacles), **fly home, land.**
 
-If the reference QR can't be read, the mission carries on without a target (no arena
-search, payload kept). If the arena has no match, it carries on to corridor 2 with
-the payload.
+**Phase failsafe: a failed phase moves the mission on to the next one** (see below).
+If the reference QR can't be read, the mission carries on without a target. If the
+whole arena is swept with no match (or with no target), the payload goes on a **random
+QR** seen in the sweep (inside the arena, clear of red); none seen → payload kept. If
+the payload doesn't drop properly, the mission moves on to corridor 2.
 
 ### Real dimensions (for SITL only — the code never hard-codes them)
 
@@ -92,7 +94,10 @@ test rigs differ from the competition, so nothing is assumed.
 - **Safety is checked continuously** (`MissionNode._tick()`, called inside every wait):
   RC CH7 low → LOITER (pilot flies); flight controller leaves GUIDED → stop commanding;
   battery critical → leave it to ArduPilot's failsafe; obstacle sensor dead → abort.
-  A failure in the air → LAND in place — except in the exit corridor (phase 5): any
+  A failure in a phase (leg failed, timeout, crash) → **phase failsafe**: stop, move on
+  to the next phase (`MissionNode._phase`); pilot / FC / battery / dead-sensor aborts
+  still end the mission. Takeoff failures still land / stay on the ground. In the exit
+  corridor (phase 5) — whose next phase is going home — any
   failure there (a planner failure, a companion "failure" abort or a crash) → **exit
   corridor failsafe**: straight up to `exit_failsafe_alt_m` (5 m, above the walls), fly
   home — around the red zones at `arena_alt_m` once the arena has been flown, never a
@@ -138,6 +143,28 @@ with a one-line fix for the Pi's libcamera) and `tools/` (standalone scripts:
 ---
 
 ## 4. The phases in detail
+
+### Site survey (GPS points measured on site — `mission_common/survey.py`)
+
+`mission_params.yaml`'s `/**` block holds the takeoff spot, the reference QR and both
+corridors' wall corners (named from the drone's view while flying **through** that
+corridor; *mouth* = the banner side). Each corridor's centreline is a least-squares fit
+through all its corners with the known 3.5 m width — measured pairs come out 2.97–3.55 m
+apart (GPS scatter), and a missing corner is the other wall + the width. At takeoff
+`mission_node` places the survey on today's home fix (drone on `survey_home` within 3 m:
+everything, arena corners included, is shifted by the difference — the GPS error common
+to both) and publishes it on `/mission/survey_offset`; more than 100 m from it (SITL,
+another field) the survey is off and the old banner search runs.
+
+With a survey: phase 1 expects the QR at `survey_qr` (flies there if it is not in view);
+phase 2 descends over the QR, flies to the line-up point 2.5 m in front of the surveyed
+mouth, down to half the banner height, and looks for the **green banner** for 4 s — seen,
+its centre moves the line sideways (≤ 1.5 m) and its bottom edge sets the altitude;
+**not seen, it goes in on the surveyed line anyway**. Phase 5 is the same with the
+**blue banner**, from a point 6 m in front of the exit corridor's mouth (reached at 9 m
+around the red mat). A path to a line-up point that would cross a corridor is refused
+(`WRONG_SIDE`). Walls still correct the line in the corridor, and the "not in the
+corridor" check still applies.
 
 ### Takeoff (shared by everything)
 
@@ -362,6 +389,12 @@ Homing comes next — see Open issues.
 | Phases 3 + 4 | `ros2 launch mission_bringup arena_search_mission.launch.py drop:=true` | add `sim:=true start:=corner` |
 | Whole mission | `ros2 launch mission_bringup mission.launch.py launch_mavros:=true launch_camera:=true` | `ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true` |
 
+Whole mission, live view + logs: Cam3 at `http://<pi>:8080/`, OAK colour at
+`http://<pi>:8081/` (watch only; frames are dropped, never queued). Each flight writes
+`~/aerothon_logs/mission_<time>/`: both streams as `.mjpeg` (`ffplay -f mjpeg <file>`)
+and a rosbag of telemetry, MAVROS, perception results and `/rosout` (no images).
+`live_view:=false` / `record:=false` turn them off.
+
 What each test does after its phase:
 - **Phase 2 test**: climbs to 10 m after the corridor, hovers 5 s, lands.
 - **Phase 3 test**: the drone takes off at a **corner** of the test area; the area runs
@@ -500,6 +533,10 @@ was removed — `arena_search_mission` is the full QR-search test now.
 - **Corridor walls rarely in view** (real OAK-D, 11.5 ft corridor): the corridor is now
   flown on the GPS line, walls correct it. Check on the drone with the walk-through dry
   run before flying (`docs/CORRIDOR_HARDWARE_CHECK.md`).
+- **Payload winch does not stop (OPEN)**: on the bench the motor keeps spinning at
+  `winch_pwm_stop` (1500, a guess). Motor driver type unknown — find the real stop PWM on the
+  drone, set it in `winch_pwm_stop` and `SERVO10_TRIM`. Spin direction and `winch_unwind_s`
+  are also unconfirmed.
 - **Phase 4 on the drone**: check the winch on the bench first (spin reels in, stop frees the spool, time a full unwind for `winch_unwind_s`)
   (`ros2 service call /payload/release std_srvs/srv/Trigger`), and the FC's
   `SERVO10_FUNCTION = 0` / `SERVO10_TRIM` = `winch_pwm_stop` (see `payload_node.py`). Is the

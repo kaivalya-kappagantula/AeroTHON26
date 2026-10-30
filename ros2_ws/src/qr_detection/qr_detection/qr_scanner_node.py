@@ -55,6 +55,10 @@ Publications:
     /qr/detection           (std_msgs/String)        — "content|qr_lat|qr_lon" for mission_node,
                                                        published ONLY after the confirmation gate
                                                        (content = the reference's text)
+    /qr/seen                (std_msgs/String)        — "content|qr_lat|qr_lon" for EVERY marker in
+                                                       view during the Phase 5 scan, matching or
+                                                       not, every frame (no gate): mission_node's
+                                                       random-QR drop when no match is found
     /qr/reference           (std_msgs/String, latched) — the stored reference record (JSON)
 
 Parameters (set via ROS2 param file or command line):
@@ -269,6 +273,7 @@ class QRScannerNode(Node):
         # Mission manager interface — "content|lat|lon" format
         self._pub_qr_detection  = self.create_publisher(String,  "/qr/detection",          reliable_qos)
         self._pub_reference     = self.create_publisher(String,  "/qr/reference",          latched_qos)
+        self._pub_qr_seen       = self.create_publisher(String,  "/qr/seen",               reliable_qos)
 
         # ── Services (called by mission_common/srv_helpers.py) ───────────────
         self.create_service(
@@ -696,6 +701,14 @@ class QRScannerNode(Node):
         When a QR is detected, publish to /qr/detection in the format
         expected by mission_node._qr_detection_cb: "content|lat|lon"
         """
+        # Every marker in view on /qr/seen (no reference needed): the
+        # mission drops on one of them if the sweep finds no match.
+        for det in detections:
+            pos = self._ground_position(det)
+            if pos is not None:
+                self._pub_qr_seen.publish(
+                    String(data=f"{det.get('data') or ''}|{pos[0]:.7f}|{pos[1]:.7f}"))
+
         if not self._delivery_id and self._reference_fp is None:
             self.get_logger().warn(
                 "[qr_scanner] [Phase 5] No reference QR — cannot match. "
@@ -785,6 +798,24 @@ class QRScannerNode(Node):
     # ═════════════════════════════════════════════════════════════════════════
     # Helpers
     # ═════════════════════════════════════════════════════════════════════════
+
+    def _ground_position(self, det: dict):
+        """(lat, lon) of a detection on the ground, or None without a fresh
+        GPS fix (the drone has moved on since)."""
+        if self._current_gps[0] is None or time.monotonic() - self._gps_t > GPS_MAX_AGE_S:
+            return None
+        u, v = quad_centroid(det["points"])
+        altitude = self._current_alt if (self._current_alt or 0.0) > 1.0 \
+            else self._delivery_altitude
+        d_north, d_east = project_to_ned(
+            pixel_u=u, pixel_v=v, altitude_m=altitude,
+            cx=self._cx, cy=self._cy, fx=self._fx, fy=self._fy,
+            heading_deg=self._heading_deg if self._heading_deg is not None else 0.0,
+            cam_yaw_offset_deg=self._cam_yaw_offset,
+        )
+        lat0, lon0 = self._current_gps
+        return (lat0 + d_north / 111_320.0,
+                lon0 + d_east / (111_320.0 * math.cos(math.radians(lat0))))
 
     def _save_miss_frame(self) -> str | None:
         """A locate that saw no QR: save the last camera frame it had

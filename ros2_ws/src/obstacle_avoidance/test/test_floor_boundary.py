@@ -16,8 +16,9 @@ FOV = cg.view_limits(CAM.fx, CAM.fy, CAM.cx, CAM.cy, CAM.width)
 K = (CAM.fx, CAM.fy, CAM.cx, CAM.cy, CAM.width)
 
 
-def colour(z, pos, yaw, seed=0, wall_bgr=(228, 228, 232)):
-    """BGR image of the rendered scene (corridor_bench SimSource._rgb)."""
+def colour(z, pos, yaw, seed=0, wall_bgr=(228, 228, 232), box_bgr=None, half_width=None):
+    """BGR image of the rendered scene (corridor_bench SimSource._rgb).
+    box_bgr: colour of everything standing inside |y| < half_width (boxes)."""
     rng = np.random.default_rng(seed)
     u, v = np.meshgrid(np.arange(CAM.width), np.arange(CAM.height))
     xc, yc = (u - CAM.cx) / CAM.fx, (v - CAM.cy) / CAM.fy
@@ -39,6 +40,9 @@ def colour(z, pos, yaw, seed=0, wall_bgr=(228, 228, 232)):
     shade = (1.0 - 0.08 * np.clip(wz, 0, 3) / 3)[..., None]
     wimg = np.array(wall_bgr, np.float32) * shade + n(4)
     img[wall] = wimg[wall]
+    if box_bgr is not None:
+        box = wall & (np.abs(wy) < half_width - 0.02)
+        img[box] = (np.array(box_bgr, np.float32) + n(4))[box]
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
@@ -66,3 +70,24 @@ def test_open_ground_is_not_a_corridor():
     z = render(Scene(x_start=50.0, x_end=60.0), CAM, pos, 0.0)
     r, _, _ = fb.fit_rgb(fb.FloorBoundary(K), colour(z, pos, 0.0), P, FOV, 0.0, 0.0, 1.2)
     assert r["walls"] == 0
+
+
+BLACK, WHITE = (35, 35, 38), (238, 238, 240)
+
+
+@pytest.mark.parametrize("side", [1.0, -1.0])
+def test_black_walls_white_board_not_taken_for_a_wall(side):
+    """Competition corridor: black walls, a white board 10 cm thick (3.5 ft
+    wide) standing against one wall: its base is not taken for a wall (its
+    edges are near-vertical in the image, dropped as occluding edges)."""
+    width, cam_height = 3.5052, 1.2192
+    pos = (0.0, 0.0, cam_height)
+    edge = side * width / 2
+    board = (2.5, 2.6, min(edge, edge - side * 1.0668), max(edge, edge - side * 1.0668), 1.83)
+    z = render(Scene(width=width, x_start=-1.0, x_end=5.7, boxes=[board]), CAM, pos, 0.0)
+    img = colour(z, pos, 0.0, wall_bgr=BLACK, box_bgr=WHITE, half_width=width / 2)
+    r, _, _ = fb.fit_rgb(fb.FloorBoundary(K), img, P, FOV, 0.0, 0.0,
+                         cam_height, width=width)
+    assert r["walls"] >= 1
+    assert 0.5 * (r["wall_left"] + r["wall_right"]) == pytest.approx(0.0, abs=0.15)
+    assert r["wall_left"] - r["wall_right"] == pytest.approx(width, rel=0.06)

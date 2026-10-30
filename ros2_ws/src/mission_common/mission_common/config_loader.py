@@ -80,7 +80,7 @@ def load_mission_config(node) -> MissionConfig:
     # ── Mission start / reference QR ─────────────────────────────
     cfg.tick_rate_hz          = _declare(node, "tick_rate_hz", 2.0)
     # Mission waits for the pilot's auto switch before doing anything.
-    cfg.require_rc_switch     = _declare(node, "require_rc_switch", True)
+    cfg.require_rc_switch     = _declare(node, "require_rc_switch", False)
     # PHYSICAL RC channel number, 1-based (CH7 -> RCIn.channels[6]).
     cfg.rc_auto_channel       = _declare(node, "rc_auto_channel", 7)
     cfg.rc_auto_pwm_thresh    = _declare(node, "rc_auto_pwm_thresh", 1700)
@@ -126,10 +126,10 @@ def load_mission_config(node) -> MissionConfig:
     # ── Entry corridor start ─────────────────────────────────────
     # After the reference QR, descend to this before the banner search (the
     # search's first full turn is at the altitude it starts at).
-    cfg.corridor_start_alt_m  = _declare(node, "corridor_start_alt_m", 3.0)
+    cfg.corridor_start_alt_m  = _declare(node, "corridor_start_alt_m", 1.2192)
     # Straight up to this once past the entry corridor's walls (the later
     # phases set their own altitudes).
-    cfg.post_entry_alt_m      = _declare(node, "post_entry_alt_m", 9.0)
+    cfg.post_entry_alt_m      = _declare(node, "post_entry_alt_m", 9.25)
 
     # ── Arena search, phase 3 (mission_manager/arena_search.py) ──
     # The arena's 4 GPS corners in order around it (competition day). All
@@ -137,7 +137,7 @@ def load_mission_config(node) -> MissionConfig:
     # origin_lat/lon is used instead.
     cfg.arena_corners_lat     = _declare(node, "arena_corners_lat", [0.0, 0.0, 0.0, 0.0])
     cfg.arena_corners_lon     = _declare(node, "arena_corners_lon", [0.0, 0.0, 0.0, 0.0])
-    cfg.arena_alt_m           = _declare(node, "arena_alt_m", 9.0)
+    cfg.arena_alt_m           = _declare(node, "arena_alt_m", 9.25)
     cfg.arena_sweep_speed_ms  = _declare(node, "arena_sweep_speed_ms", 0.5)
     cfg.arena_red_margin_m    = _declare(node, "arena_red_margin_m", 2.0)   # from the red mat
     cfg.arena_edge_margin_m   = _declare(node, "arena_edge_margin_m", 1.0)  # strips inside the edge
@@ -173,6 +173,33 @@ def load_mission_config(node) -> MissionConfig:
     if cfg.exit_failsafe_alt_m < 3.5:
         raise ValueError("exit_failsafe_alt_m must clear the 2.44 m corridor walls "
                          "with margin (>= 3.5 m)")
+    # Hard ceiling (mavros_utils.MAX_ALT_M, 9.5 m): refuse to start rather
+    # than have goto() silently cap a phase's altitude in flight.
+    from mission_common.mavros_utils import MAX_ALT_M
+    for name in ("cruise_altitude_m", "drop_altitude_m", "post_entry_alt_m",
+                 "arena_alt_m", "exit_failsafe_alt_m", "corridor_start_alt_m"):
+        if float(getattr(cfg, name)) > MAX_ALT_M:
+            raise ValueError(f"{name} {getattr(cfg, name)} m is above the "
+                             f"{MAX_ALT_M} m altitude cap")
+
+    # ── Site survey (mission_common/survey.py; yaml /** block) ───
+    # [lat, lon] points measured on site; [0, 0] = not measured. Corridor
+    # corners are named from the drone's view while flying THROUGH that
+    # corridor (entry: home -> arena, exit: arena -> home); mouth = the
+    # banner side. With survey_home set and the drone taking off within
+    # survey_max_home_dist_m of it: phase 1 expects the QR at survey_qr, and
+    # both corridors are flown on their surveyed centrelines (banner seen:
+    # it corrects the line; not seen: in anyway).
+    cfg.survey_home            = _declare(node, "survey_home", [0.0, 0.0])
+    cfg.survey_qr              = _declare(node, "survey_qr", [0.0, 0.0])
+    for which in ("entry", "exit"):
+        for k in ("mouth_left", "mouth_right", "end_left", "end_right"):
+            setattr(cfg, f"survey_{which}_{k}",
+                    _declare(node, f"survey_{which}_{k}", [0.0, 0.0]))
+    cfg.survey_corridor_width_m = _declare(node, "survey_corridor_width_m", 3.5052)
+    cfg.survey_max_home_dist_m  = _declare(node, "survey_max_home_dist_m", 100.0)
+    cfg.survey_anchor_to_home   = _declare(node, "survey_anchor_to_home", True)
+    cfg.survey_max_home_shift_m = _declare(node, "survey_max_home_shift_m", 3.0)
 
     # ── Payload drop ─────────────────────────────────────────────
     cfg.drop_arrival_tolerance_m = _declare(node, "drop_arrival_tolerance_m", 1.0)

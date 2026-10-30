@@ -58,7 +58,7 @@ def generate_launch_description():
         DeclareLaunchArgument("fcu_url", default_value="/dev/ttyAMA2:921600"),
         DeclareLaunchArgument("takeoff_alt",
                               description="take-off height (m) before the banner search"),
-        DeclareLaunchArgument("rc_switch", default_value="true", choices=["true", "false"]),
+        DeclareLaunchArgument("rc_switch", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument("drone_width", default_value="0.6294"),
     ]
 

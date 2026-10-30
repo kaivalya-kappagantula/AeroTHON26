@@ -25,6 +25,7 @@ def fake(reason, climb_ok=True, arena_flown=False, route_home=True):
     arena_flown: the arena frame exists (home is then routed around red)."""
     n = object.__new__(MissionNode)
     n.cfg, n.home, n.rel_alt, n.gps = CFG, HOME, 1.2, (12.9717, 77.5946)
+    n.heading_deg, n.mission_t0 = 90.0, None
     n.sm = MissionSM()
     for ev in ["auto_activate", "airborne", "qr_scanned", "entry_complete", "search_exhausted"]:
         n.sm.send(ev)
@@ -130,3 +131,20 @@ def test_no_time_left_for_the_arena():
 
 def test_clock_not_running_before_lift_off():
     assert clock(None)._arena_deadline() is None
+
+
+# --- phase 6: homing after a successful exit corridor --------------------------
+
+def test_homing_climbs_above_the_walls_then_home_then_lands():
+    n = fake(None)
+    assert n._exit_corridor_phase() is True
+    n._home_and_land(5.0, routed=False, why="homing")
+    assert n.calls == [("climb", 5.0), ("goto", HOME, 5.0), "land"]
+    assert n.sm.state_id == "LANDED"
+
+
+def test_homing_never_flies_home_low():
+    n = fake(None, climb_ok=False)
+    with pytest.raises(MissionAbort):
+        n._home_and_land(5.0, routed=False, why="homing")
+    assert not any(isinstance(c, tuple) and c[0] == "goto" for c in n.calls)

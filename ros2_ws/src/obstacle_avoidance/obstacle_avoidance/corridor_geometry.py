@@ -60,6 +60,8 @@ class CorridorParams:
     max_refine_turn_deg: float = 8.0  # per refine pass; larger = not a line
     obstacle_range_m: float = 3.5
     obstacle_depth_m: float = 0.8     # points within this of the nearest face
+                                      # (thickness + stereo noise; corridor
+                                      # boards are 5-10 cm: avoidance.yaml 0.4)
     wall_clearance_m: float = 0.15    # points this close to a wall are wall
     min_obstacle_points: int = 12
     mouth_margin_m: float = 0.40      # wall start this far beyond the FOV

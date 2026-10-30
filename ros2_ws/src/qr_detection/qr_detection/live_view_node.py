@@ -18,8 +18,16 @@
 #   topic        image topic                                  [/down_frame]
 #   ignore_regions  red_zone_node's masked image areas, drawn as grey boxes
 #                JSON [[x0, y0, x1, y1], ...] frame fractions  [""]
+#   label        page title / overlay name                    [Cam3 (down)]
+#   downward     true = Cam3 overlays (red sighting, qr status, centre
+#                cross); false for the OAK forward view        [true]
+#   record_dir   non-empty = also save every streamed frame to
+#                <record_dir>/<label>.mjpeg (the JPEGs already encoded for the
+#                stream, so no extra CPU). Play: ffplay -f mjpeg <file>   [""]
 
 import json
+import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,11 +42,11 @@ from std_msgs.msg import Bool, String
 
 from qr_detection.red_zone import parse_regions
 
-PAGE = b"""<!doctype html><html><head><meta charset="utf-8">
+PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Cam3 live</title><style>body{margin:0;background:#111;color:#ccc;
-font:14px sans-serif;text-align:center}img{max-width:100%;height:auto}</style>
-</head><body><img src="/stream.mjpg"><p>Cam3 (down) live view</p></body></html>"""
+<title>{label} live</title><style>body{{margin:0;background:#111;color:#ccc;
+font:14px sans-serif;text-align:center}}img{{max-width:100%;height:auto}}</style>
+</head><body><img src="/stream.mjpg"><p>{label} live view</p></body></html>"""
 
 
 class LiveViewNode(Node):
@@ -51,6 +59,9 @@ class LiveViewNode(Node):
         self.declare_parameter("jpeg_quality", 70)
         self.declare_parameter("topic", "/down_frame")
         self.declare_parameter("ignore_regions", "")
+        self.declare_parameter("label", "Cam3 (down)")
+        self.declare_parameter("downward", True)
+        self.declare_parameter("record_dir", "")
         gp = lambda n: self.get_parameter(n).value
         self.port = int(gp("port"))
         self.width = int(gp("width"))
@@ -58,6 +69,17 @@ class LiveViewNode(Node):
         self.quality = int(gp("jpeg_quality"))
         topic = str(gp("topic"))
         self.ignore = parse_regions(str(gp("ignore_regions")))
+        self.label = str(gp("label"))
+        self.downward = bool(gp("downward"))
+        page = PAGE.format(label=self.label).encode()
+        self._rec = None
+        record_dir = os.path.expanduser(str(gp("record_dir")))
+        if record_dir:
+            os.makedirs(record_dir, exist_ok=True)
+            name = re.sub(r"[^A-Za-z0-9]+", "_", self.label).strip("_").lower()
+            path = os.path.join(record_dir, f"{name}.mjpeg")
+            self._rec = open(path, "ab")
+            self.get_logger().info(f"[live_view] recording {topic} to {path}")
 
         self._bridge = CvBridge()
         self._jpeg = None               # latest encoded frame
@@ -75,8 +97,9 @@ class LiveViewNode(Node):
                               history=HistoryPolicy.KEEP_LAST, depth=1)
         self.create_subscription(Image, topic, self._frame_cb, best)
         self.create_subscription(String, "/mission/telemetry", self._telem_cb, 10)
-        self.create_subscription(Bool, "/red_zone/sighting", self._red_cb, 10)
-        self.create_subscription(String, "/qr_scanner/status", self._qr_cb, reliable)
+        if self.downward:
+            self.create_subscription(Bool, "/red_zone/sighting", self._red_cb, 10)
+            self.create_subscription(String, "/qr_scanner/status", self._qr_cb, reliable)
 
         node = self
 
@@ -91,7 +114,7 @@ class LiveViewNode(Node):
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html")
                     self.end_headers()
-                    self.wfile.write(PAGE)
+                    self.wfile.write(page)
 
         self._server = ThreadingHTTPServer(("0.0.0.0", self.port), Handler)
         self._server.daemon_threads = True
@@ -135,12 +158,19 @@ class LiveViewNode(Node):
         with self._cond:
             self._jpeg = buf.tobytes()
             self._cond.notify_all()
+        if self._rec is not None:
+            try:
+                self._rec.write(self._jpeg)
+            except OSError as e:        # disk full / card gone: keep streaming
+                self.get_logger().error(f"[live_view] recording stopped: {e}")
+                self._rec = None
 
     def _overlay(self, img):
         t = self._telem
         alt = t.get("rel_alt")
         batt = t.get("battery_v")
         lines = [
+            self.label,
             f"{t.get('state', '?')} | {t.get('fcu_mode', '?')} | "
             f"{'ARMED' if t.get('fcu_armed') else 'disarmed'}",
             f"alt {alt:.1f} m" if alt is not None else "alt --",
@@ -162,7 +192,8 @@ class LiveViewNode(Node):
                           (160, 160, 160), 2)
             cv2.putText(img, "ignored", (int(x0 * w) + 4, int(y1 * h) - 6),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (160, 160, 160), 1)
-        cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 0), cv2.MARKER_CROSS, 24, 1)
+        if self.downward:
+            cv2.drawMarker(img, (w // 2, h // 2), (0, 255, 0), cv2.MARKER_CROSS, 24, 1)
         if self._red:
             cv2.rectangle(img, (0, 0), (w - 1, h - 1), (0, 0, 255), 6)
             cv2.putText(img, "RED IN VIEW", (w - 170, 28), cv2.FONT_HERSHEY_SIMPLEX,
@@ -202,6 +233,8 @@ class LiveViewNode(Node):
 
     def destroy_node(self):
         self._server.shutdown()
+        if self._rec is not None:
+            self._rec.close()
         super().destroy_node()
 
 
