@@ -198,8 +198,12 @@ mission_node:
     battery_critical_v: 13.6
     # Obstacle sensor health (obstacle_avoidance coverage_guard)
     require_avoidance_sensor: true
-    sensor_preflight_timeout_s: 30.0
+    sensor_preflight_timeout_s: 30.0  # counted after the OAK stage is up
     sensor_fail_timeout_s: 10.0
+    # Staged start: mission.launch.py sets staged_launch true + stage_launch_args;
+    # the OAK, downward camera and each phase's nodes start only when needed.
+    stage_up_timeout_s: 30.0          # a stage's nodes must appear in this
+    down_cam_up_timeout_s: 20.0       # no /down_frame in this -> warn, fly on
 
 # ─── Path Planner ─────────────────────────────────────────────────
 path_planner_node:

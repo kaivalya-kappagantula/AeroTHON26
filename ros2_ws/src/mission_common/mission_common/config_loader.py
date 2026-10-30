@@ -224,6 +224,14 @@ def load_mission_config(node) -> MissionConfig:
     cfg.require_avoidance_sensor  = _declare(node, "require_avoidance_sensor", True)
     cfg.sensor_preflight_timeout_s = _declare(node, "sensor_preflight_timeout_s", 30.0)
     cfg.sensor_fail_timeout_s     = _declare(node, "sensor_fail_timeout_s", 10.0)
+
+    # ── Staged start (mission_manager/stages.py) ─────────────────
+    # True (mission.launch.py): mission_node starts the OAK, the downward
+    # camera and each phase's nodes only when needed. False: all already up.
+    cfg.staged_launch         = _declare(node, "staged_launch", False)
+    cfg.stage_launch_args     = _declare(node, "stage_launch_args", "")
+    cfg.stage_up_timeout_s    = _declare(node, "stage_up_timeout_s", 30.0)
+    cfg.down_cam_up_timeout_s = _declare(node, "down_cam_up_timeout_s", 20.0)
     cfg.coverage_backoff_after_s  = _declare(node, "coverage_backoff_after_s", 3.0)
     cfg.coverage_backoff_m        = _declare(node, "coverage_backoff_m", 1.0)
 

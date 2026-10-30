@@ -84,14 +84,17 @@ def _setup(context, *args, **kwargs):
         ('~/rgb', rgb_topic),
         ('~/rgb_camera_info', rgb_info_topic),
     ]
-    nodes.append(Node(
-        package='obstacle_avoidance',
-        executable='corridor_perception_node',
-        name='corridor_perception_node',
-        output='screen',
-        parameters=[config, corridor_overrides],
-        remappings=builder_remaps + colour_remaps,
-    ))
+    # corridor_perception:=false: the staged mission starts it per corridor
+    # (mission_bringup mission_stage.launch.py).
+    if LaunchConfiguration('corridor_perception').perform(context) == 'true':
+        nodes.append(Node(
+            package='obstacle_avoidance',
+            executable='corridor_perception_node',
+            name='corridor_perception_node',
+            output='screen',
+            parameters=[config, corridor_overrides],
+            remappings=builder_remaps + colour_remaps,
+        ))
 
     # Coverage guard runs alongside the builder, consuming its scan + coverage.
     nodes.append(Node(
@@ -131,6 +134,8 @@ def generate_launch_description():
         DeclareLaunchArgument('rgb_topic', default_value='/oak/rgb/image_raw'),
         DeclareLaunchArgument('rgb_camera_info_topic',
                               default_value='/oak/rgb/camera_info'),
+        DeclareLaunchArgument('corridor_perception', default_value='true',
+                              choices=['true', 'false']),
         DeclareLaunchArgument('corridor_width_min_m', default_value='',
                               description='override avoidance.yaml (m); empty = yaml'),
         DeclareLaunchArgument('corridor_width_max_m', default_value='',

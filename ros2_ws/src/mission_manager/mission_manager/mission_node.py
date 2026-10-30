@@ -41,6 +41,7 @@ from mission_common.config_loader import load_mission_config
 from mission_manager.arena_search import ArenaSearch
 from mission_manager.payload_drop import PayloadDrop
 from mission_manager.reference_qr import ReferenceQr
+from mission_manager.stages import Stages
 from mission_manager.state_machine import MissionSM
 from path_planner.exit_corridor import search_points
 
@@ -152,6 +153,9 @@ class MissionNode(Node):
 
         self.create_timer(1.0 / self.cfg.tick_rate_hz, self._publish_telemetry)
         self.arena = ArenaSearch(self)          # phase 3 (subscribes now)
+
+        # OAK, downward camera and per-phase nodes, started phase by phase
+        self.stages = Stages(self, self.cfg.staged_launch, self.cfg.stage_launch_args)
 
         self._mission_thread = threading.Thread(target=self._run_mission, daemon=True)
         self._mission_thread.start()
@@ -424,10 +428,21 @@ class MissionNode(Node):
             raise MissionAbort("failure", "no GPS fix")
         self.home = self.gps
         self.get_logger().info(f"[mission_node] Home: ({self.home[0]:.7f}, {self.home[1]:.7f})")
+        # One at a time, each up before the next: the OAK first (required),
+        # then the downward camera.
+        if not self.stages.start("oak", self.cfg.stage_up_timeout_s) \
+                and self.cfg.require_avoidance_sensor:
+            raise MissionAbort("failure", "OAK stage did not start — not taking off")
         if self.cfg.require_avoidance_sensor and not self._wait_for(
                 lambda: self._sensor_live, self.cfg.sensor_preflight_timeout_s,
                 "obstacle sensor live (/avoidance/sensor_live)"):
             raise MissionAbort("failure", "obstacle sensor not live before takeoff")
+        self.stages.start("down_cam", self.cfg.stage_up_timeout_s)
+        if self.cfg.staged_launch and not self._wait_for(
+                lambda: self.count_publishers("/down_frame") > 0,
+                self.cfg.down_cam_up_timeout_s, "downward camera (/down_frame)"):
+            self.get_logger().warn(
+                "[mission_node] Downward camera NOT up — no reference QR / red zones")
 
     def _check_ground_drift(self, ref, secs: float, when: str):
         """Wait secs, aborting if the EKF position moves more than
@@ -908,13 +923,18 @@ class MissionNode(Node):
             # it on its banner). Failed -> phase 3 climbs straight up first.
             self.sm.qr_scanned()
             self._log_clock("phase 2, entry corridor")
+            self.stages.start("entry_corridor", self.cfg.stage_up_timeout_s)
             self._phase("phase 2 (entry corridor)", self._entry_corridor_phase)
+            self.stages.stop("entry_corridor")
 
             self.sm.entry_complete()
             # Phase 3: the arena search from where phase 2 ended, cut short by
             # the mission clock so phases 4-5 still fit. No reference QR:
             # nothing matches, but the QRs it sees are kept for the random drop.
             self._log_clock("phase 3, arena search")
+            # red_zone_node runs from here to landing: every leg over the
+            # arena (drop, exit corridor approach, homing) routes around red.
+            self.stages.start("arena", self.cfg.stage_up_timeout_s)
             target = None
             until = self._arena_deadline()
             if until is None or until > time.time():
@@ -945,6 +965,7 @@ class MissionNode(Node):
             # Phase 5: the exit corridor. Failed -> its failsafe has already
             # climbed above the walls, flown home and landed.
             self._log_clock("phase 5, exit corridor")
+            self.stages.start("exit_corridor", self.cfg.stage_up_timeout_s)
             if not self._exit_corridor_phase():
                 self._log_clock("landed (exit corridor failsafe)")
                 return
@@ -1061,6 +1082,7 @@ def main(args=None):
     except KeyboardInterrupt:
         node.get_logger().info("[mission_node] Shutting down")
     finally:
+        node.stages.stop_all()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
