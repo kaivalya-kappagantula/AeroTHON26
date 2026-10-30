@@ -119,6 +119,10 @@ def _setup(context, *args, **kwargs):
         return nodes
 
     if stage == "down_cam":
+        # camera_ros: an INTEGER is the camera's index, a STRING its name
+        # ("0" as a string = "camera with name 0 does not exist")
+        camera = LaunchConfiguration("camera").perform(context)
+        camera = int(camera) if camera.isdigit() else camera
         nodes = []
         if launch_camera:
             # RPi Camera Module 1.3 (OV5647, fixed focus). camera_ros only
@@ -133,7 +137,7 @@ def _setup(context, *args, **kwargs):
                 name="camera",
                 output="screen",
                 parameters=[{
-                    "camera": LaunchConfiguration("camera").perform(context),
+                    "camera": camera,
                     "width": 1280,
                     "height": 720,
                     "format": "BGR888",

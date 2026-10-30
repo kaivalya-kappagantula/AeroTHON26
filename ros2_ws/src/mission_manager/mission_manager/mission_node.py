@@ -438,11 +438,24 @@ class MissionNode(Node):
                 "obstacle sensor live (/avoidance/sensor_live)"):
             raise MissionAbort("failure", "obstacle sensor not live before takeoff")
         self.stages.start("down_cam", self.cfg.stage_up_timeout_s)
-        if self.cfg.staged_launch and not self._wait_for(
-                lambda: self.count_publishers("/down_frame") > 0,
-                self.cfg.down_cam_up_timeout_s, "downward camera (/down_frame)"):
-            self.get_logger().warn(
-                "[mission_node] Downward camera NOT up — no reference QR / red zones")
+        if self.cfg.staged_launch and "launch_camera:=true" in self.cfg.stage_launch_args \
+                and not self._wait_down_frame(self.cfg.down_cam_up_timeout_s):
+            # No reference QR, no red zones (every arena leg needs them): stay down
+            raise MissionAbort("failure", "downward camera sent no frame — not taking off")
+
+    def _wait_down_frame(self, timeout: float) -> bool:
+        """True once a /down_frame image arrives (the camera can start and
+        then die, so a publisher alone proves nothing). The subscription only
+        lives for this wait."""
+        from rclpy.qos import qos_profile_sensor_data
+        from sensor_msgs.msg import Image
+        got = threading.Event()
+        sub = self.create_subscription(Image, "/down_frame", lambda _m: got.set(),
+                                       qos_profile_sensor_data)
+        try:
+            return self._wait_for(got.is_set, timeout, "downward camera frame (/down_frame)")
+        finally:
+            self.destroy_subscription(sub)
 
     def _check_ground_drift(self, ref, secs: float, when: str):
         """Wait secs, aborting if the EKF position moves more than
