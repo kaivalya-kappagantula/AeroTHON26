@@ -3,6 +3,9 @@
 #
 #   ./setup.sh            install everything and build
 #   ./setup.sh --build    only rebuild (no apt / pip)
+#   ./setup.sh --build --camera   ... also rebuild the Pi camera workspace
+#                         (libcamera + camera_ros: slow; only built
+#                         automatically the first time)
 #
 # Needs: Ubuntu 24.04 with ROS 2 Jazzy installed (/opt/ros/jazzy) and sudo.
 # Safe to run again (after a git pull, say): it skips what is already there.
@@ -19,7 +22,11 @@
 set -e
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_ONLY=false
-[ "${1:-}" = "--build" ] && BUILD_ONLY=true
+CAMERA=false
+for a in "$@"; do
+    [ "$a" = "--build" ] && BUILD_ONLY=true
+    [ "$a" = "--camera" ] && CAMERA=true
+done
 
 say() { echo -e "\n\033[1;32m==> $*\033[0m"; }
 die() { echo -e "\n\033[1;31mERROR: $*\033[0m" >&2; exit 1; }
@@ -67,9 +74,15 @@ if ! $BUILD_ONLY; then
     fi
 fi
 
+# camera_ws (libcamera + camera_ros) only changes when the camera stack does:
+# built the first time, afterwards only with --camera (one package at a time).
 if $IS_PI; then
-    say "building camera_ws (Pi camera driver)"
-    (cd "$ROOT/camera_ws" && colcon build --symlink-install)
+    if $CAMERA || [ ! -f "$ROOT/camera_ws/install/camera_ros/share/camera_ros/package.xml" ]; then
+        say "building camera_ws (Pi camera driver) — takes a while"
+        (cd "$ROOT/camera_ws" && colcon build --symlink-install --parallel-workers 1)
+    else
+        say "camera_ws already built — skipped (./setup.sh --build --camera to rebuild it)"
+    fi
 fi
 
 say "building ros2_ws"

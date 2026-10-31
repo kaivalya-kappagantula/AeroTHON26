@@ -154,6 +154,12 @@ def _setup(context, *args, **kwargs):
                         "camera_model": "OAK-D-LITE",
                         "params_file": os.path.join(avoidance_share, "config",
                                                     "oak_d_lite_depth.yaml"),
+                        # camera URDF hangs off the vehicle; no depth_image_proc
+                        # cloud or image_proc rectify node (nothing reads them)
+                        "parent_frame": "base_link",
+                        "pointcloud.enable": "false",
+                        "rectify_rgb": "false",
+                        "use_gdb": "false",
                     }.items(),
                 ),
                 IncludeLaunchDescription(
@@ -223,7 +229,8 @@ def _setup(context, *args, **kwargs):
             executable="corridor_perception_node",
             name="corridor_perception_node",
             output="screen",
-            parameters=[avoidance_config] + ([{"corridor_stride_px": 2}] if sim else []),
+            # stride is per 640 px: 4 = every 2nd px of the 320-wide sim depth
+            parameters=[avoidance_config] + ([{"corridor_stride_px": 4}] if sim else []),
             remappings=depth_remaps + ([] if sim else rgb_remaps),
         )
         planner = Node(

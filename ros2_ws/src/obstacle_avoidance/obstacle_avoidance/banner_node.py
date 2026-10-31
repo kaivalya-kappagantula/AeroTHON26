@@ -27,6 +27,9 @@
 # banner_depth_min_points. Plain cloth gives little stereo depth, so NaN is
 # normal; path_planner then uses where the walls begin instead. (The colour
 # and depth cameras are 3.75 cm apart on the OAK-D Lite: negligible here.)
+#
+# Colour frames are shrunk to rgb_process_width (640: the size the detector
+# was tuned at) before detection; the intrinsics are scaled to match.
 
 import math
 from dataclasses import fields
@@ -44,7 +47,8 @@ from mission_common import banner_msg
 from obstacle_avoidance import corridor_geometry as cg
 from obstacle_avoidance import geometry as g
 from obstacle_avoidance.banner import BannerParams, Detector, Tracker
-from obstacle_avoidance.depth_image import DepthDecodeError, decode_bgr, decode_depth
+from obstacle_avoidance.depth_image import (DepthDecodeError, decode_bgr, decode_depth,
+                                            scale_intrinsics, scaled_stride, shrink_bgr)
 
 TOPIC = banner_msg.TOPIC_GREEN
 STATE = {'HOLD': banner_msg.HOLD, 'LOCK': banner_msg.LOCK}
@@ -62,6 +66,7 @@ class BannerNode(Node):
         self.declare_parameter('banner_depth_min_points', 20)
         self.declare_parameter('banner_debug_image', False)
         self.declare_parameter('corridor_stride_px', 4)
+        self.declare_parameter('rgb_process_width', 640)
         self.declare_parameter('camera_pitch_offset_deg', 0.0)
         self.declare_parameter('pitch_compensation', True)
         gp = lambda n: self.get_parameter(n).value          # noqa: E731
@@ -72,6 +77,7 @@ class BannerNode(Node):
         self.min_points = int(gp('banner_depth_min_points'))
         self.debug = bool(gp('banner_debug_image'))
         self.stride = int(gp('corridor_stride_px'))
+        self.rgb_width = int(gp('rgb_process_width'))
         self.pitch_offset = math.radians(float(gp('camera_pitch_offset_deg')))
         self.pitch_compensation = bool(gp('pitch_compensation'))
         topic = str(gp('banner_topic'))
@@ -157,16 +163,8 @@ class BannerNode(Node):
                          self._pitch, self._roll, self._att_stamp_s)
 
     def _intrinsics(self, w, h):
-        """Colour intrinsics for a w x h frame. camera_info that does not match
-        the image (the OAK driver has published 720p intrinsics with smaller
-        images before) is scaled to it, with a warning."""
-        fx, fy, cx, cy, iw, ih = self._K
-        if (iw, ih) != (w, h):
-            self._warn_once('size', f'colour camera_info is {iw}x{ih} but frames are {w}x{h}: '
-                                    'scaling the intrinsics — check the OAK rgb params')
-            sx, sy = w / iw, h / ih
-            return fx * sx, fy * sy, (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5
-        return fx, fy, cx, cy
+        """Colour intrinsics scaled to a w x h (shrunk) frame."""
+        return scale_intrinsics(*self._K, w, h)
 
     def _on_timer(self):
         item, self._rgb_msg = self._rgb_msg, None
@@ -181,6 +179,13 @@ class BannerNode(Node):
         except DepthDecodeError as e:
             self._warn_once('decode', f'{e}')
             return
+        iw, ih = self._K[4:]
+        if (iw, ih) != (msg.width, msg.height):
+            # the OAK driver has published 720p intrinsics with smaller images
+            self._warn_once('size', f'colour camera_info is {iw}x{ih} but frames are '
+                                    f'{msg.width}x{msg.height}: scaling the intrinsics '
+                                    '— check the OAK rgb params')
+        bgr = shrink_bgr(bgr, self.rgb_width)
         fresh = att_stamp is not None and t_frame - att_stamp < 0.5
         use = self.pitch_compensation and fresh
         pitch = (pitch_raw - self.pitch_offset) if use else 0.0
@@ -249,7 +254,8 @@ class BannerNode(Node):
             self._warn_once('depth', f'{e}')
             return float('nan')
         fx, fy, cx, cy, _ = self._K_depth
-        x, y, h = cg.level_points(z, fx, fy, cx, cy, pitch, self.stride, roll)
+        x, y, h = cg.level_points(z, fx, fy, cx, cy, pitch,
+                                  scaled_stride(self.stride, z.shape[1]), roll)
         rng = np.hypot(x, y)
         brg = np.arctan2(y, x)
         elev = np.arctan2(h, rng)

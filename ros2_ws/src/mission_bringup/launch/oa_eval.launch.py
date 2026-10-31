@@ -106,7 +106,8 @@ def _stack(context, *args, **kwargs):
         nodes += [
             Node(package='obstacle_avoidance', executable='corridor_perception_node',
                  name='corridor_perception_node', output='screen',
-                 parameters=[avoidance_cfg, {'corridor_stride_px': 2}], remappings=remaps),
+                 parameters=[avoidance_cfg, {'corridor_stride_px': 4}],  # per 640 px: every 2nd of 320
+                 remappings=remaps),
             Node(package='path_planner', executable='path_planner_node',
                  name='path_planner_node', output='screen',
                  parameters=[mission_params, {

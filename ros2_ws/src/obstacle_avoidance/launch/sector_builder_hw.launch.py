@@ -6,13 +6,14 @@
 # its own so the two lifecycles stay independent. Depth arrives as 16UC1
 # (millimetres) on hardware; the builder handles the units from the encoding.
 #
-# The driver MUST be started with our params file. Its defaults publish 1280x720
-# intrinsics alongside a 640x480 depth image on this camera, which silently
-# corrupts every bearing the builder computes — see config/oak_d_lite_depth.yaml.
+# The driver MUST be started with our params file (depth aligned to the 720P
+# colour camera, so camera_info matches the depth image) — see
+# config/oak_d_lite_depth.yaml.
 #
 #   # terminal 1: the driver (its own launch, our params)
 #   ros2 launch depthai_ros_driver camera.launch.py \
-#     params_file:=$(ros2 pkg prefix obstacle_avoidance)/share/obstacle_avoidance/config/oak_d_lite_depth.yaml
+#     params_file:=$(ros2 pkg prefix obstacle_avoidance)/share/obstacle_avoidance/config/oak_d_lite_depth.yaml \
+#     parent_frame:=base_link pointcloud.enable:=false rectify_rgb:=false use_gdb:=false
 #   # terminal 2: our stack
 #   ros2 launch obstacle_avoidance sector_builder_hw.launch.py
 #   (corridor_width_min_m:=... corridor_width_max_m:=... override the yaml's

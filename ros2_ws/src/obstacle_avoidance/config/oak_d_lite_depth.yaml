@@ -1,87 +1,81 @@
-# depthai_ros_driver params for the OAK-D Lite in avoidance service.
+# depthai_ros_driver (v2.12.2) params for the forward OAK-D Lite.
 #
-# Depth + colour, no neural net, no IMU. The avoidance stack consumes the depth
-# (/oak/stereo/image_raw, 16UC1 mm) plus its camera_info; the colour stream
-# (/oak/rgb/image_raw, 640x360) feeds banner_node (green entrance banner) and
-# the RGB wall-base detector in corridor_perception_node (white walls give
-# little stereo depth). Pitch for horizon compensation comes from the FC IMU
-# over MAVROS — not the camera's.
+# RGBD on USB3: colour 720P (MJPEG on the camera, decoded by the driver back
+# to /oak/rgb/image_raw bgr8 1280x720) and stereo depth ALIGNED to the colour
+# camera (/oak/stereo/image_raw, 16UC1 mm, 1280x720, same intrinsics as
+# colour). No NN, no IMU (pitch comes from the FC IMU over MAVROS).
 #
-# Three OAK-D Lite specifics that the driver defaults get wrong:
-#   * the RGBD default pipeline uploads a mobilenet blob at startup; on a USB2
-#     link that upload throws XLinkWriteError and takes the container down.
-#     i_nn_type: none keeps RGBD from loading one (the driver's own rgbd.yaml
-#     does the same). If the driver still tries, go back to i_pipeline_type
-#     Depth — the corridor then runs on depth walls only and there is no
-#     banner.
-#   * mono sensors are OV7251, which has no 720p mode (the driver default) and
-#     no 400p either — both fall back to 480P with only a WARN. Note the map
-#     keys are UPPERCASE ('480P'); a lowercase '480p' misses the map entirely
-#     and warns "not supported ... using default" even though 480P is exactly
-#     what you asked for.
-#   * stereo.i_width/i_height are what the driver stamps into the depth
-#     camera_info, and they are hardcoded 1280x720 unless i_align_depth is true
-#     — that branch, and only that branch, reads the real sensor size
-#     (stereo_param_handler.cpp:86-105). We align to nothing, so we must pin
-#     them by hand. Left at the default the driver publishes 720p intrinsics
-#     (fx 904, cx 647) alongside a 640x480 depth image; sector_builder reads
-#     fx/cx from camera_info, so that mismatch compresses every bearing by ~2x
-#     and lands obstacles in the wrong bins, silently and plausibly.
-#     Verified on this device: pinning them makes camera_info 640x480 fx ~452.
+# Consumers and what they do with the bigger frames:
+#   * banner_node / corridor_perception_node shrink colour to
+#     rgb_process_width (640, avoidance.yaml) before detecting — their pixel
+#     tunings (green_detect.py, floor boundary) were made at 640x360 — and
+#     scale the camera_info intrinsics to match.
+#   * corridor_stride_px is per 640 px of depth width: on 1280-wide aligned
+#     depth the nodes sample every 8th pixel (160x90 points, as before).
+#   * sector_builder reads fx/cx and the size from /oak/stereo/camera_info.
+#     With i_align_depth: true the driver takes the depth size from the rgb
+#     socket (stereo_param_handler.cpp), so camera_info matches the image —
+#     the old stereo.i_width/i_height pins are not needed any more.
 #
+# Not in v2.12.2 (silently ignored, so left out): camera.i_tf_publish_rate,
+# rgb.i_publish_isp. The rectified mono topics are
+# left.i_left_rect_publish_topic / right.i_right_rect_publish_topic in this
+# version, not stereo.i_publish_left_rect / i_publish_right_rect.
+#
+# The RGBD default pipeline uploads a mobilenet blob at startup; i_nn_type:
+# none keeps it from doing so (a failed upload takes the container down).
+#
+# Started by mission_stage.launch.py (stage oak), or by hand:
 #   ros2 launch depthai_ros_driver camera.launch.py \
-#       params_file:=<share>/obstacle_avoidance/config/oak_d_lite_depth.yaml
+#       params_file:=<share>/obstacle_avoidance/config/oak_d_lite_depth.yaml \
+#       parent_frame:=base_link pointcloud.enable:=false rectify_rgb:=false use_gdb:=false
 /oak:
   ros__parameters:
     camera:
-      i_pipeline_type: RGBD       # stereo depth + colour, no NN
-      i_nn_type: none             # NO blob upload (see header)
-      i_enable_imu: false         # pitch comes from the FC IMU over MAVROS
-      i_enable_ir: false          # OAK-D Lite has no IR projector
+      i_pipeline_type: RGBD        # stereo depth + colour
+      i_nn_type: none              # no on-device neural network (see header)
+      i_enable_imu: false          # pitch comes from the FC IMU over MAVROS
+      i_enable_ir: false           # OAK-D Lite has no IR projector
+      i_usb_speed: SUPER           # force USB3; fails loudly instead of silently dropping to USB2
+      i_publish_tf_from_calibration: false   # TF from the URDF (parent_frame:=base_link)
 
-    # Colour: 1080P scaled by 1/3 in the ISP -> 640x360, the size
-    # green_detect.py was tuned at (its morphology kernels are in pixels).
-    # 15 fps like the mono cameras keeps USB2 well under its limit.
-    # Check once on the Pi: ros2 topic echo --once /oak/rgb/camera_info
-    # must say width 640, height 360.
     rgb:
-      i_resolution: '1080P'
-      i_set_isp_scale: true
-      i_isp_num: 1
-      i_isp_den: 3
+      i_publish_topic: true
       i_fps: 15.0
+      i_resolution: '720P'
+      i_width: 1280                # aligned depth takes its size from these
+      i_height: 720
+      i_low_bandwidth: true        # on-camera MJPEG encoding -> less USB/CPU load
+      i_low_bandwidth_quality: 50
+      i_enable_preview: false      # small preview stream, not needed
+      i_output_isp: false          # use the video output rather than full ISP
 
-    # i_width/i_height must match the resolution the sensor actually delivers —
-    # they are the numbers that reach camera_info, and nothing cross-checks them.
     left:
-      i_resolution: '480P'      # key is case-sensitive: monoResolutionMap uses '480P'
-      i_width: 640
-      i_height: 480
-      i_fps: 15.0                 # builder publishes at 10 Hz; 15 gives headroom
+      i_publish_topic: false       # raw mono streams not needed with stereo depth
+      i_left_rect_publish_topic: false
+      i_resolution: '480P'         # OV7251 has no 400P/720P (they fall back to 480P
+      i_fps: 15.0                  # with a WARN); key is case-sensitive: '480P'
+
     right:
-      i_resolution: '480P'      # key is case-sensitive: monoResolutionMap uses '480P'
-      i_width: 640
-      i_height: 480
+      i_publish_topic: false
+      i_right_rect_publish_topic: false
+      i_resolution: '480P'
       i_fps: 15.0
 
     stereo:
-      i_publish_topic: true
-      i_output_disparity: false   # we want metric depth, 16UC1 millimetres
-      i_align_depth: false        # no RGB stream to align to; keeps depth in the
-                                  # right-mono frame that camera_info describes
-      i_width: 640                # MUST match the mono output — see header note.
-      i_height: 480               # These are the camera_info dims, not left.i_*.
-      # Corridor obstacles are WHITE boards 5-10 cm thick with a little print,
-      # between BLACK walls: almost no texture on either, so stereo depth comes
-      # mostly from the boards' vertical edges against the dark background and
-      # from the print. Tuned for that:
-      i_subpixel: true            # integer disparity at 480P is ~0.27 m per step at
-                                  # 3 m — more than a board's thickness; subpixel ~0.03 m.
-                                  # Output stays 16UC1 mm, same bandwidth.
-      i_lr_check: true            # keep: rejects mismatches on the plain faces
-      i_stereo_conf_threshold: 230   # was 200: accept the weaker matches on the faint
-                                     # print / edges (LR check + speckle still filter)
+      i_publish_topic: true        # depth output
+      i_output_disparity: false    # metric depth, 16UC1 millimetres
+      i_fps: 15.0
+      i_subpixel: false            # big VPU and bandwidth saving (integer disparity:
+                                   # coarser range steps at 3 m+)
+      i_lr_check: true             # keep: improves depth quality cheaply
+      i_extended_disp: false       # only needed for very close range
+      i_depth_preset: HIGH_DENSITY
+      i_align_depth: true          # align depth to RGB (needed for RGBD)
+      i_publish_synced_rect_pair: false
+      i_low_bandwidth: false       # keep depth lossless
+      # Corridor obstacles are WHITE boards with a little print between BLACK
+      # walls: little texture, so depth comes mostly from edges and print.
+      i_stereo_conf_threshold: 230   # accept the weaker matches on faint print / edges
       i_enable_speckle_filter: true  # removes small noisy blobs
-      i_depth_filter_size: 3         # was 5: a 5x5 median erases the thin bands of
-                                     # depth along a board's edges on a blank face
-      i_extended_disparity: false
+      i_depth_filter_size: 3         # a 5x5 median erases thin bands along board edges

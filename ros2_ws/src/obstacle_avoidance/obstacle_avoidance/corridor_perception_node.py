@@ -68,7 +68,8 @@ from mission_common import corridor_msg
 from obstacle_avoidance import corridor_geometry as cg
 from obstacle_avoidance import floor_boundary as fb
 from obstacle_avoidance import geometry as g
-from obstacle_avoidance.depth_image import DepthDecodeError, decode_bgr, decode_depth
+from obstacle_avoidance.depth_image import (DepthDecodeError, decode_bgr, decode_depth,
+                                            scale_intrinsics, scaled_stride, shrink_bgr)
 
 TOPIC = '/corridor/perception'
 
@@ -99,6 +100,7 @@ class CorridorPerceptionNode(Node):
         self.declare_parameter('corridor_walls_from', 'auto')
         self.declare_parameter('corridor_rgb_floor_thr', 16.0)
         self.declare_parameter('corridor_rgb_min_wall_dist_m', 0.375)
+        self.declare_parameter('rgb_process_width', 640)
         gp = lambda n: self.get_parameter(n).value          # noqa: E731
         self.params = cg.CorridorParams(
             width_min_m=float(gp('corridor_width_min_m')),
@@ -123,6 +125,7 @@ class CorridorPerceptionNode(Node):
             raise ValueError("corridor_walls_from must be auto, depth or rgb")
         self.floor_thr = float(gp('corridor_rgb_floor_thr'))
         self.rgb_min_wall = float(gp('corridor_rgb_min_wall_dist_m'))
+        self.rgb_width = int(gp('rgb_process_width'))
         self.width_forget_s = float(gp('corridor_width_forget_s'))
         self._widths = collections.deque(maxlen=int(gp('corridor_width_window')))
         self._last_walls_s = None   # last frame with any wall fit
@@ -200,19 +203,17 @@ class CorridorPerceptionNode(Node):
             'Latched colour intrinsics fx={:.1f} fy={:.1f} cx={:.1f} cy={:.1f} '
             '{}x{} — RGB wall bases on'.format(*self._K_rgb))
 
-    def _rgb_fitter(self, w, h):
-        """FloorBoundary + FOV for w x h colour frames (built once). Intrinsics
-        that do not match the frames are scaled to them."""
+    def _rgb_fitter(self, msg, w, h):
+        """FloorBoundary + FOV for w x h (shrunk) colour frames (built once).
+        The intrinsics are scaled to them; camera_info that does not match the
+        driver's frames (msg) is warned about."""
         if self._fb is None:
-            fx, fy, cx, cy, iw, ih = self._K_rgb
-            if (iw, ih) != (w, h):
+            iw, ih = self._K_rgb[4:]
+            if (iw, ih) != (msg.width, msg.height):
                 self.get_logger().warn(
-                    f'colour camera_info is {iw}x{ih} but frames are {w}x{h}: '
-                    'scaling the intrinsics — check the OAK rgb params')
-                sx, sy = w / iw, h / ih
-                fx, fy = fx * sx, fy * sy
-                cx, cy = (cx + 0.5) * sx - 0.5, (cy + 0.5) * sy - 0.5
-            K = (fx, fy, cx, cy, w)
+                    f'colour camera_info is {iw}x{ih} but frames are '
+                    f'{msg.width}x{msg.height}: scaling the intrinsics — check the OAK rgb params')
+            K = (*scale_intrinsics(*self._K_rgb, w, h), w)
             self._fb = fb.FloorBoundary(K, thr=self.floor_thr)
             self._fov_rgb = cg.view_limits(*K)
         return self._fb, self._fov_rgb
@@ -262,7 +263,8 @@ class CorridorPerceptionNode(Node):
                 'no fresh /mavros/imu/data — corridor fit assumes level camera',
                 throttle_duration_sec=5.0)
         fx, fy, cx, cy, _ = self._K
-        x, y, h = cg.level_points(z, fx, fy, cx, cy, pitch, self.stride, roll)
+        x, y, h = cg.level_points(z, fx, fy, cx, cy, pitch,
+                                  scaled_stride(self.stride, z.shape[1]), roll)
         left, right, up = self._fov
         # Height above ground cuts the ground out of the slice (flat ground at
         # home level assumed; ignored if unknown or implausibly low).
@@ -330,7 +332,8 @@ class CorridorPerceptionNode(Node):
                 self.get_logger().error(f'{e}')
                 self._logged_rgb_error = True
             return None
-        fitter, fov_rgb = self._rgb_fitter(bgr.shape[1], bgr.shape[0])
+        bgr = shrink_bgr(bgr, self.rgb_width)
+        fitter, fov_rgb = self._rgb_fitter(item[0], bgr.shape[1], bgr.shape[0])
         r, _, _ = fb.fit_rgb(fitter, bgr, self.params, fov_rgb, pitch, roll, hag,
                              width=width, min_wall_dist_m=self.rgb_min_wall)
         return r

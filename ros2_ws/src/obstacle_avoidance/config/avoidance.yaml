@@ -57,7 +57,11 @@
     # side enter the ~70 deg HFOV only ~0.7 W ahead; the fit uses the wall
     # sections ahead of the vehicle.
     corridor_rate_hz: 5.0           # Pi 5: ~60 ms per fit at stride 4
-    corridor_stride_px: 4           # 640x480 -> 160x120 samples
+    corridor_stride_px: 4           # per 640 px of depth width: 1280x720 aligned
+                                    # OAK depth -> every 8th px, 160x90 samples
+    rgb_process_width: 640          # colour shrunk to this before the RGB wall
+                                    # bases / banner (their pixel tunings are at
+                                    # 640x360; the OAK publishes 1280x720)
     corridor_width_min_m: 1.0
     corridor_width_max_m: 4.0       # wider: walls enter view too close to max range
     corridor_width_tol_m: 0.30      # NEW: once measured, pairs this near it only
