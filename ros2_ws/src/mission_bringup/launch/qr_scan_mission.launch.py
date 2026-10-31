@@ -154,7 +154,6 @@ def generate_launch_description():
         parameters=[mission_params, {
             "cruise_altitude_m": _float("alt"),
             "require_rc_switch": ParameterValue(LaunchConfiguration("rc_switch"), value_type=bool),
-            "require_avoidance_sensor": False,    # no OAK-D pipeline in this test
             # SITL simulates a 3S pack (12.6 V); the 4S limit applies on hardware
             "battery_critical_v": ParameterValue(PythonExpression(
                 ["10.5 if '", sim, "' == 'true' else ", _yaml_battery_v(mission_params)]),

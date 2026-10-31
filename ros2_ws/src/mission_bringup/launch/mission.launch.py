@@ -13,14 +13,14 @@
 # then mission_node. mission_node starts every other node PHASE BY PHASE
 # and stops it when its phase is over (mission_stage.launch.py,
 # mission_manager/stages.py):
-#   preflight -> landing     OAK-D + obstacle pipeline, downward camera, live views
+#   preflight -> landing     downward camera + its live view
 #   phase 3 -> exit start    red_zone_node
-#   phase 5                  path_planner + corridor_perception
+# (no OAK-D: both corridors are flown on GPS waypoints)
 #
 # Live view (any browser on the drone's WiFi):
-#   http://<pi>:8080/   downward Cam 1.3        http://<pi>:8081/   OAK-D colour
+#   http://<pi>:8080/   downward Cam 1.3
 #   (640 px, <= 10 fps, latest frame only: a slow viewer never holds up the
-#   mission). record_video:=true also saves both as .mjpeg in the log folder.
+#   mission). record_video:=true also saves it as .mjpeg in the log folder.
 #
 # Logs: ~/aerothon_logs/mission_<time>/ — one text file per phase + summary.log
 # (mission_manager/phase_log.py).
@@ -117,8 +117,8 @@ def generate_launch_description():
                               description="White balance (5 = daylight: keeps the red mat's "
                                           "colour stable; 0 = auto)"),
         DeclareLaunchArgument("live_view", default_value="true", choices=["true", "false"],
-                              description="Live view: Cam 1.3 :8080, OAK-D :8081"),
+                              description="Live view: Cam 1.3 :8080"),
         DeclareLaunchArgument("record_video", default_value="false", choices=["true", "false"],
-                              description="Also save both live views as .mjpeg in the log folder"),
+                              description="Also save the live view as .mjpeg in the log folder"),
         OpaqueFunction(function=_setup),
     ])

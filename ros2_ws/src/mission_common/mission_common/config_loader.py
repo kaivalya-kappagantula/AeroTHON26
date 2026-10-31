@@ -123,14 +123,21 @@ def load_mission_config(node) -> MissionConfig:
     cfg.takeoff_liftoff_alt_m      = _declare(node, "takeoff_liftoff_alt_m", 0.5)
     cfg.takeoff_climb_rate_ms      = _declare(node, "takeoff_climb_rate_ms", 0.5)
 
-    # ── Entry corridor start ─────────────────────────────────────
-    # After the reference QR, descend to this before the banner search (the
-    # search's first full turn is at the altitude it starts at).
+    # ── Corridors (surveyed waypoints, GPS only) ─────────────────
+    # Entry corridor: flown THROUGH at corridor_start_alt_m (half the 8 ft
+    # walls), descended to entry_start_standoff_m in front of its mouth.
     cfg.corridor_start_alt_m  = _declare(node, "corridor_start_alt_m", 1.2192)
-    # Surveyed entry corridor: flown OVER at cruise_altitude_m, mouth centre
-    # -> midpoint of its two exit corners, at this speed / arrival tolerance.
-    cfg.entry_overfly_speed_ms    = _declare(node, "entry_overfly_speed_ms", 0.7)
-    cfg.entry_overfly_tolerance_m = _declare(node, "entry_overfly_tolerance_m", 0.7)
+    cfg.entry_start_standoff_m = _declare(node, "entry_start_standoff_m", 3.0)
+    # Exit corridor: flown OVER at this (above the 2.44 m walls).
+    cfg.exit_overfly_alt_m    = _declare(node, "exit_overfly_alt_m", 5.0)
+    if cfg.exit_overfly_alt_m < 3.5:
+        raise ValueError("exit_overfly_alt_m must clear the 2.44 m corridor walls "
+                         "with margin (>= 3.5 m)")
+    # Both: speed / arrival tolerance on the corridor waypoints, and how far
+    # past the end the drone flies before it climbs (entry) / heads home.
+    cfg.corridor_speed_ms     = _declare(node, "corridor_speed_ms", 0.7)
+    cfg.corridor_tolerance_m  = _declare(node, "corridor_tolerance_m", 0.7)
+    cfg.corridor_clear_m      = _declare(node, "corridor_clear_m", 2.0)
     # Straight up to this at the end of the entry corridor (the arena sweep
     # starts from there; the later phases set their own altitudes).
     cfg.post_entry_alt_m      = _declare(node, "post_entry_alt_m", 9.25)
@@ -162,7 +169,6 @@ def load_mission_config(node) -> MissionConfig:
     # Phase 5 begins exit_search_standoff_m in front of wp_exit_mouth (in the
     # arena), reached at arena_alt_m around the red zones.
     cfg.exit_search_standoff_m  = _declare(node, "exit_search_standoff_m", 6.0)
-    cfg.exit_corridor_timeout_s = _declare(node, "exit_corridor_timeout_s", 600.0)
     # Exit corridor failsafe (ONLY the exit corridor): straight up to this,
     # home, land. Must clear the corridor walls (8 ft = 2.44 m) with margin.
     cfg.exit_failsafe_alt_m = _declare(node, "exit_failsafe_alt_m", 5.0)
@@ -173,7 +179,8 @@ def load_mission_config(node) -> MissionConfig:
     # than have goto() silently cap a phase's altitude in flight.
     from mission_common.mavros_utils import MAX_ALT_M
     for name in ("cruise_altitude_m", "drop_altitude_m", "post_entry_alt_m",
-                 "arena_alt_m", "exit_failsafe_alt_m", "corridor_start_alt_m"):
+                 "arena_alt_m", "exit_failsafe_alt_m", "corridor_start_alt_m",
+                 "exit_overfly_alt_m"):
         if float(getattr(cfg, name)) > MAX_ALT_M:
             raise ValueError(f"{name} {getattr(cfg, name)} m is above the "
                              f"{MAX_ALT_M} m altitude cap")
@@ -201,7 +208,8 @@ def load_mission_config(node) -> MissionConfig:
     # Wait for /payload/release (winch lower + jerk + restart, held in place)
     cfg.drop_release_timeout_s   = _declare(node, "drop_release_timeout_s", 60.0)
 
-    # ── Obstacle sensor health (obstacle_avoidance coverage_guard) ─
+    # ── Obstacle sensor health (path_planner only; the mission flies no
+    # obstacle sensor) ─
     # sensor_live False -> hold; still False after sensor_fail_timeout_s -> LAND.
     # In a corridor, no valid corridor fit -> hold; after
     # coverage_backoff_after_s back off coverage_backoff_m along the corridor;
@@ -211,8 +219,8 @@ def load_mission_config(node) -> MissionConfig:
     cfg.sensor_fail_timeout_s     = _declare(node, "sensor_fail_timeout_s", 10.0)
 
     # ── Staged start (mission_manager/stages.py) ─────────────────
-    # True (mission.launch.py): mission_node starts the OAK, the downward
-    # camera and each phase's nodes only when needed. False: all already up.
+    # True (mission.launch.py): mission_node starts the downward camera and
+    # each phase's nodes only when needed. False: all already up.
     cfg.staged_launch         = _declare(node, "staged_launch", False)
     cfg.stage_launch_args     = _declare(node, "stage_launch_args", "")
     # Per-phase text logs (mission_manager/phase_log.py); "" = none

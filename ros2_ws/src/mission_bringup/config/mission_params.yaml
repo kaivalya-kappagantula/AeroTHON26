@@ -10,16 +10,20 @@
 # ╚═══════════════════════════════════════════════════════════════════╝
 #
 # Phases (mission_manager/mission_node.py), from -> to:
-#   0 preflight       on the ground: GPS, waypoints, OAK-D + down camera up
+#   0 preflight       on the ground: GPS, waypoints, down camera up
 #   1 takeoff_qr      wp_home (takeoff to 5 m) -> wp_qr; find, centre, read the QR
-#   2 entry_corridor  wp_entry_mouth -> wp_entry_end at 5 m (OVER the corridor),
-#                     then straight up to 9.25 m                     [waypoints]
+#   2 entry_corridor  THROUGH the corridor, GPS only: entry start
+#                     (entry_start_standoff_m in front of wp_entry_mouth) at 5 m
+#                     -> down to 1.22 m -> wp_entry_mouth -> wp_entry_end ->
+#                     corridor_clear_m past it -> straight up to 9.25 m [waypoints]
 #   3 arena_search    BCD sweep around the red mat until the matching QR
 #   4 payload_drop    over the QR, down to 5 m, centre, release, back up
-#   5 exit_corridor   exit start (exit_search_standoff_m in front of
-#                     wp_exit_mouth, around red at 9.25 m) -> down to 1.22 m
-#                     -> through to wp_exit_end, past the obstacles
-#   6 home_land       straight up to 5 m -> wp_home -> land          [waypoints]
+#   5 exit_corridor   OVER the corridor: exit start (exit_search_standoff_m in
+#                     front of wp_exit_mouth, around red at 9.25 m) -> down to
+#                     5 m -> wp_exit_mouth -> wp_exit_end            [waypoints]
+#   6 home_land       5 m -> wp_home -> land                         [waypoints]
+#
+# No forward / obstacle camera (OAK-D removed): nothing in the mission needs it.
 #
 # Legacy / SITL only (NOT used by the mission): path_planner_node
 # origin_lat/lon, corridor1_/corridor2_waypoints_x/y and red_zone_N_x/_y.
@@ -29,9 +33,8 @@
 #   FENCE_ALT_MAX 10 (companion caps every altitude at 9.5 m, mavros_utils.MAX_ALT_M;
 #   arena 9.25 m), RTL_ALT 500..950 cm
 #   (FC-side RTL must clear the 2.44 m corridor walls)
-#   PRX1_TYPE 2, AVOID_* (obstacle_avoidance/params/stage5_6_corridor.param),
-#   OA_TYPE 0 and GUID_OPTIONS 0 (plain position control in GUIDED; the
-#   exit corridor is flown by path_planner, not BendyRuler), payload winch on relays:
+#   PRX1_TYPE 0 (no OAK-D: a proximity sensor with no data blocks arming),
+#   OA_TYPE 0 and GUID_OPTIONS 0 (plain position control in GUIDED), payload winch on relays:
 #   RELAY1_PIN 50 / RELAY2_PIN 51, RELAY1/2_FUNCTION 1 (Relay), RELAY1/2_DEFAULT 0,
 #   SERVO9/10_FUNCTION -1 (GPIO). RC7 is NOT used: the mission starts on launch.
 
@@ -67,17 +70,15 @@ mission_node:
   ros__parameters:
     # Altitudes (m above home). Hard cap 9.5 m everywhere (mavros_utils.MAX_ALT_M;
     # config_loader refuses a value above it):
-    #   takeoff + reference QR 5 m -> entry corridor flown OVER at 5 m
-    #   (wp_entry_mouth -> wp_entry_end) -> straight up to 9.25 m there, arena
-    #   sweep from that spot -> drop down to 5 m and back up to 9.25 m -> exit
-    #   corridor 1.22 m (half the 8 ft walls, never above 8 ft except the exit
-    #   failsafe) -> home 5 m
+    #   takeoff + reference QR 5 m -> down to 1.22 m in front of the entry
+    #   corridor, THROUGH it at 1.22 m (half the 8 ft walls) -> straight up to
+    #   9.25 m past it, arena sweep from that spot -> drop down to 5 m and back
+    #   up to 9.25 m -> exit corridor flown OVER at 5 m -> home 5 m
     drop_altitude_m: 5.0
     cruise_altitude_m: 5.0          # takeoff altitude
     # Speeds per phase (m/s):
     #   takeoff climb  takeoff_climb_rate_ms 0.5      reference QR / drop centring
-    #   qr_move_speed_ms 0.5   entry corridor (clean) corridor_follow_speed_ms 0.7
-    #   exit corridor (thin white obstacles) corridor_exit_speed_ms 0.4
+    #   qr_move_speed_ms 0.5   both corridors (waypoints) corridor_speed_ms 0.7
     #   arena sweep + routing around red arena_sweep_speed_ms 0.5 (limited by
     #   what the red camera sees ahead at 9.25 m: ~3.4 m)   homing transit 2.0
     arena_speed_ms: 1.5
@@ -131,13 +132,20 @@ mission_node:
     takeoff_max_ground_drift_m: 0.8
     takeoff_liftoff_alt_m: 0.5
     takeoff_climb_rate_ms: 0.5
-    # Exit corridor start point: straight down to this — the middle of the
-    # 8 ft corridor walls.
+    # Phase 2, entry corridor, flown THROUGH on GPS waypoints (no obstacle
+    # sensor), nose down it: from the reference QR at cruise_altitude_m to
+    # entry_start_standoff_m in front of wp_entry_mouth, straight down there to
+    # corridor_start_alt_m — the middle of the 8 ft walls — then wp_entry_mouth
+    # -> wp_entry_end -> corridor_clear_m past it, straight up to post_entry_alt_m.
     corridor_start_alt_m: 1.2192
-    # Phase 2, entry corridor: from the reference QR, over the corridor at
-    # cruise_altitude_m to wp_entry_mouth, then wp_entry_end, nose down it.
-    entry_overfly_speed_ms: 0.7
-    entry_overfly_tolerance_m: 0.7      # GPS noise ~1 m
+    entry_start_standoff_m: 3.0       # NEW: descend this far in front of the mouth
+    # Phase 5, exit corridor, flown OVER at this: wp_exit_mouth -> wp_exit_end.
+    exit_overfly_alt_m: 5.0           # NEW: >= 3.5 m (walls 2.44 m)
+    # Both corridors: waypoint speed / arrival tolerance; entry: how far past
+    # wp_entry_end before the climb (clear of the walls).
+    corridor_speed_ms: 0.7            # (was entry_overfly_speed_ms)
+    corridor_tolerance_m: 0.7         # (was entry_overfly_tolerance_m) GPS noise ~1 m
+    corridor_clear_m: 2.0             # NEW
     # Phase 2 end: climb straight up to this there; the arena sweep starts
     # from that spot (strip nearest it first).
     post_entry_alt_m: 9.25          # arena altitude (9-9.5 m, cap 9.5)
@@ -164,14 +172,11 @@ mission_node:
                                       # flight logs: the CLOCK lines give each phase's time
     # Phase 5, exit corridor: its start point is this far in front of
     # wp_exit_mouth (in the arena), flown to at arena_alt_m around the red
-    # zones; then down to corridor_start_alt_m facing down the corridor and
-    # path_planner lines up 2.5 m out (entry_preentry_m) and flies through.
+    # zones; then down to exit_overfly_alt_m facing down the corridor and
+    # over it.
     exit_search_standoff_m: 6.0
-    exit_corridor_timeout_s: 600.0    # mission_node's wait for the exit corridor leg
     # EXIT CORRIDOR FAILSAFE (only there): any exit corridor failure -> climb
     # straight up to this (above the 2.44 m walls), fly home at it, land.
-    # Fully autonomous; near the mouth path_planner first backs out from
-    # under the banner (exit_banner_clear_m).
     exit_failsafe_alt_m: 5.0
     # Phase 4, drop (mission_manager/payload_drop.py): over the matched QR
     # at arena_alt_m, straight down to drop_altitude_m, centre on it with
@@ -186,14 +191,8 @@ mission_node:
     drop_release_timeout_s: 60.0      # > payload_node winch_unwind_s + jerks + ~30 (retries)
     # Battery (4S under load). Companion only stops the mission; the FC acts.
     battery_critical_v: 13.6
-    # Obstacle sensor (OAK-D, coverage_guard): must be live before takeoff;
-    # in flight only the exit corridor needs it (path_planner: dead longer
-    # than sensor_fail_timeout_s there -> exit corridor failsafe).
-    require_avoidance_sensor: true
-    sensor_preflight_timeout_s: 30.0  # counted after the OAK stage is up
-    sensor_fail_timeout_s: 10.0
     # Staged start: mission.launch.py sets staged_launch, stage_launch_args and
-    # log_dir; the OAK, downward camera and each phase's nodes start only when
+    # log_dir; the downward camera and each phase's nodes start only when
     # needed (mission_manager/stages.py).
     stage_up_timeout_s: 30.0          # a stage's nodes must appear in this
     down_cam_up_timeout_s: 20.0       # no /down_frame in this -> warn, fly on

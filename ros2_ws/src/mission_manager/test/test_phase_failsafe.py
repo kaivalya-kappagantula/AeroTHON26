@@ -22,7 +22,6 @@ def node():
     n.gps, n.rel_alt = None, None            # no hold goto in these tests
     n.get_logger = lambda: Log()
     n.calls = []
-    n._stop_planner = lambda: n.calls.append("stop")
     return n
 
 
@@ -38,7 +37,7 @@ def test_failure_or_crash_moves_on(err):
     def fail():
         raise err
     assert n._phase("p", fail) is None
-    assert n.calls == ["stop"]
+    assert n.calls == []
 
 
 @pytest.mark.parametrize("kind", ["pilot", "fc", "battery", "sensor"])

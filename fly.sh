@@ -1,14 +1,14 @@
 #!/bin/bash
 # fly.sh — the whole mission, one command.
 #
-#   ./fly.sh            on the drone (Pi 5): MAVROS on /dev/ttyAMA2, OAK-D,
+#   ./fly.sh            on the drone (Pi 5): MAVROS on /dev/ttyAMA2,
 #                       downward Cam 1.3, every phase, land
 #   ./fly.sh sim        on a laptop: ArduPilot SITL at wp_home (the real site,
 #                       from mission_params.yaml) + simulated cameras, same code
 #
 # Extra arguments go to mission.launch.py, e.g. ./fly.sh fcu_url:=/dev/ttyACM0:115200
 #
-# Live view:  http://<pi>:8080/ (down camera)   http://<pi>:8081/ (OAK-D)
+# Live view:  http://<pi>:8080/ (down camera)
 # Logs:       ~/aerothon_logs/mission_<time>/   one file per phase + summary.log
 # Stop:       Ctrl+C (in the air the FC keeps holding position in GUIDED:
 #             take over with the RC in LOITER / LAND)

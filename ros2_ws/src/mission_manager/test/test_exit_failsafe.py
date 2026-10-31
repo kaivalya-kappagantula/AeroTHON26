@@ -43,7 +43,6 @@ def fake(reason, climb_ok=True, arena_flown=False, route_home=True, red_watch=No
         n.calls.append(("arena_go_to", (lat, lon)))
         return route_home
     n.arena = SimpleNamespace(frame=object() if arena_flown else None, go_to=arena_go_to)
-    n._stop_planner = lambda: n.calls.append("stop")
 
     def climb(alt, yaw_enu=None):
         n.calls.append(("climb", alt))
@@ -65,14 +64,14 @@ def test_through_runs_no_failsafe():
     assert n.calls == []
 
 
-@pytest.mark.parametrize("reason", ["BLOCKED t at s=3.7 m", "SENSOR_TIMEOUT t at s=2.0 m",
-                                    "LEG_TIMEOUT t", "no response from path_planner",
+@pytest.mark.parametrize("reason", ["waypoint exit_mouth not reached",
+                                    "5.00 m not confirmed — not flying over the walls lower",
                                     "no route to the exit corridor start point clear of "
                                     "the red zones"])
 def test_any_failure_climbs_above_the_walls_then_home_then_lands(reason):
     n = fake(reason)
     assert n._exit_corridor_phase() is False
-    assert n.calls == ["stop", ("climb", 5.0), ("goto", HOME, 5.0), "land"]
+    assert n.calls == [("climb", 5.0), ("goto", HOME, 5.0), "land"]
     assert n.sm.state_id == "LANDED"
 
 
@@ -87,7 +86,7 @@ def test_never_flies_home_below_the_failsafe_altitude():
 def test_arena_flown_goes_home_around_the_red_zones():
     n = fake("BLOCKED t", arena_flown=True)
     assert n._exit_corridor_phase() is False
-    assert n.calls == ["stop", ("climb", 5.0), ("arena_go_to", HOME), "land"]
+    assert n.calls == [("climb", 5.0), ("arena_go_to", HOME), "land"]
 
 
 def test_past_the_exit_start_point_goes_straight_home():
@@ -95,7 +94,7 @@ def test_past_the_exit_start_point_goes_straight_home():
     # at / in the corridor, home is away from the arena
     n = fake("BLOCKED t", arena_flown=True, red_watch=False)
     assert n._exit_corridor_phase() is False
-    assert n.calls == ["stop", ("climb", 5.0), ("goto", HOME, 5.0), "land"]
+    assert n.calls == [("climb", 5.0), ("goto", HOME, 5.0), "land"]
 
 
 def test_no_route_home_clear_of_red_lands_in_place():
@@ -110,7 +109,7 @@ def test_no_route_home_clear_of_red_lands_in_place():
 def test_failure_abort_or_crash_in_the_phase_runs_the_failsafe(err):
     n = fake(err)
     assert n._exit_corridor_phase() is False
-    assert n.calls == ["stop", ("climb", 5.0), ("goto", HOME, 5.0), "land"]
+    assert n.calls == [("climb", 5.0), ("goto", HOME, 5.0), "land"]
 
 
 @pytest.mark.parametrize("kind", ["pilot", "fc", "battery"])

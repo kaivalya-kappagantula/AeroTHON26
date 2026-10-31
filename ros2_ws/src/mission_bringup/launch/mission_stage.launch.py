@@ -8,18 +8,14 @@
 #       record_video:=false log_dir:=<dir>
 #
 # Stages:
-#   oak            OAK-D Lite driver + obstacle pipeline (sector_builder ->
-#                  OBSTACLE_DISTANCE to the FC, coverage_guard -> sensor_live)
-#                  + OAK live view http://<pi>:8081/. Preflight -> landing.
 #   down_cam       Downward RPi Camera Module 1.3 (camera_ros) + its live view
 #                  http://<pi>:8080/. Preflight -> landing.
 #   arena          red_zone_node. Phase 3 -> the exit corridor's start point.
-#   exit_corridor  path_planner_node + corridor_perception_node. Phase 5.
 #
-# sim:=true (fly.sh sim): the same stages against ArduPilot SITL, cameras
-# simulated AT THE REAL SITE (mission waypoints): sitl_corridor_sim renders
-# the OAK-D depth / colour of both corridors (exit corridor with obstacles),
-# sim_down_camera_node the reference QR at wp_qr and the arena's QRs + red mat.
+# sim:=true (fly.sh sim): the same stages against ArduPilot SITL, the
+# downward camera simulated AT THE REAL SITE (mission waypoints):
+# sim_down_camera_node renders the reference QR at wp_qr and the arena's
+# QRs + red mat.
 
 import json
 import math
@@ -27,14 +23,12 @@ import os
 
 import yaml
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
 from ament_index_python.packages import get_package_share_directory
 
-STAGES = ("oak", "down_cam", "arena", "exit_corridor")
+STAGES = ("down_cam", "arena")
 M_PER_DEG_LAT = 111_320.0       # as mission_common.survey
 
 
@@ -45,23 +39,13 @@ def _local(p, home):
 
 
 def sim_world(cfg: dict) -> dict:
-    """The SITL world at the real site, x East / y North of wp_home:
-    corridor waypoints for sitl_corridor_sim (first = mouth_offset_m before
-    the mouth, last = exit_offset_m past the end, so the walls run exactly
-    mouth -> end) and the downward camera's QRs and red mat (the reference
-    at wp_qr; the match, decoys and a 10 ft red mat inside the arena)."""
+    """The SITL world at the real site, x East / y North of wp_home: the
+    downward camera's QRs and red mat (the reference at wp_qr; the match,
+    decoys and a 10 ft red mat inside the arena)."""
     wp = cfg["/**"]["ros__parameters"]
     mn = cfg["mission_node"]["ros__parameters"]
-    sim = cfg["sitl_corridor_sim"]["ros__parameters"]
     home = wp["wp_home"]
     out = {}
-    for i, name in ((1, "entry"), (2, "exit")):
-        m, e = _local(wp[f"wp_{name}_mouth"], home), _local(wp[f"wp_{name}_end"], home)
-        n = math.hypot(e[0] - m[0], e[1] - m[1])
-        u = ((e[0] - m[0]) / n, (e[1] - m[1]) / n)
-        a, b = sim["mouth_offset_m"], sim["exit_offset_m"]
-        out[f"corridor{i}_waypoints_x"] = [m[0] - a * u[0], e[0] + b * u[0]]
-        out[f"corridor{i}_waypoints_y"] = [m[1] - a * u[1], e[1] + b * u[1]]
     # arena point at fractions (a along corner 0 -> 1, b along corner 0 -> 3)
     c = [_local((la, lo), home) for la, lo in zip(mn["arena_corners_lat"],
                                                   mn["arena_corners_lon"])]
@@ -97,81 +81,15 @@ def _setup(context, *args, **kwargs):
         get_package_share_directory("mission_bringup"), "config", "mission_params.yaml")
     with open(mission_params) as f:
         cfg = yaml.safe_load(f)
-    avoidance_share = get_package_share_directory("obstacle_avoidance")
-    avoidance_config = os.path.join(avoidance_share, "config", "avoidance.yaml")
-    depth_remaps = [("~/depth", "/oak/stereo/image_raw"),
-                    ("~/camera_info", "/oak/stereo/camera_info")]
-    rgb_remaps = [("~/rgb", "/oak/rgb/image_raw"),
-                  ("~/rgb_camera_info", "/oak/rgb/camera_info")]
-    # SITL depth comes at 5 Hz (hardware 10 Hz): wider stale cutoffs, the
-    # guard 0.2 s ahead of the builder watchdog; half-resolution render.
-    sim_timeouts = {"depth_stale_timeout_s": 0.6, "depth_watchdog_timeout_s": 0.8}
-
     def live_view_of(label, topic, port, downward):
         return Node(
             package="qr_detection",
             executable="live_view_node",
-            name=f"live_view_{'down' if downward else 'oak'}",
+            name="live_view_down",
             output="screen",
             parameters=[{"label": label, "topic": topic, "port": port,
                          "downward": downward, "record_dir": log_dir if record else ""}],
         )
-
-    if stage == "oak":
-        if sim:
-            world = sim_world(cfg)
-            nodes = [
-                # ONE dict: a dict listed after the yaml file does not override
-                # the yaml's own sitl_corridor_sim: section (node-specific wins)
-                Node(package="obstacle_avoidance", executable="sitl_corridor_sim",
-                     name="sitl_corridor_sim", output="screen",
-                     parameters=[{
-                         **cfg["sitl_corridor_sim"]["ros__parameters"],
-                         "origin_lat": cfg["/**"]["ros__parameters"]["wp_home"][0],
-                         "origin_lon": cfg["/**"]["ros__parameters"]["wp_home"][1],
-                         **{k: v for k, v in world.items() if k.startswith("corridor")},
-                         "corridor1_length_m": 0.0, "corridor2_length_m": 0.0,
-                         # the real OAK-D on the 11.5 ft corridor: walls past
-                         # 3.5 m give no depth; GPS wanders 0.3 m over 60 s
-                         "wall_depth_max_m": 3.5,
-                         "gps_drift_m": 0.3, "gps_drift_period_s": 60.0}]),
-                Node(package="obstacle_avoidance", executable="sector_builder_node",
-                     name="sector_builder_node", output="screen",
-                     parameters=[avoidance_config, sim_timeouts], remappings=depth_remaps),
-                Node(package="obstacle_avoidance", executable="coverage_guard_node",
-                     name="coverage_guard_node", output="screen",
-                     parameters=[avoidance_config, sim_timeouts]),
-            ]
-        else:
-            # MUST use obstacle_avoidance's params file (oak_d_lite_depth.yaml
-            # header: wrong intrinsics mis-bin every bearing).
-            nodes = [
-                IncludeLaunchDescription(
-                    PythonLaunchDescriptionSource([PathJoinSubstitution([
-                        FindPackageShare("depthai_ros_driver"), "launch", "camera.launch.py"])]),
-                    launch_arguments={
-                        "name": "oak",
-                        "camera_model": "OAK-D-LITE",
-                        "params_file": os.path.join(avoidance_share, "config",
-                                                    "oak_d_lite_depth.yaml"),
-                        # camera URDF hangs off the vehicle; no depth_image_proc
-                        # cloud or image_proc rectify node (nothing reads them)
-                        "parent_frame": "base_link",
-                        "pointcloud.enable": "false",
-                        "rectify_rgb": "false",
-                        "use_gdb": "false",
-                    }.items(),
-                ),
-                IncludeLaunchDescription(
-                    PythonLaunchDescriptionSource(
-                        os.path.join(avoidance_share, "launch", "sector_builder_hw.launch.py")),
-                    launch_arguments={"obstacle_path": "sink",
-                                      "corridor_perception": "false"}.items(),
-                ),
-            ]
-        if live_view:
-            nodes.append(live_view_of("OAK-D (forward)", "/oak/rgb/image_raw", 8081, False))
-        return nodes
 
     if stage == "down_cam":
         nodes = []
@@ -219,28 +137,6 @@ def _setup(context, *args, **kwargs):
         if live_view:
             nodes.append(live_view_of("Cam 1.3 (down)", "/down_frame", 8080, True))
         return nodes
-
-    if stage == "exit_corridor":
-        # path_planner flies the exit corridor on corridor_perception's walls
-        # and obstacles (depth + colour on hardware; the sim's colour stream
-        # is banner-only, so there it runs on depth at the sim's resolution).
-        perception = Node(
-            package="obstacle_avoidance",
-            executable="corridor_perception_node",
-            name="corridor_perception_node",
-            output="screen",
-            # stride is per 640 px: 4 = every 2nd px of the 320-wide sim depth
-            parameters=[avoidance_config] + ([{"corridor_stride_px": 4}] if sim else []),
-            remappings=depth_remaps + ([] if sim else rgb_remaps),
-        )
-        planner = Node(
-            package="path_planner",
-            executable="path_planner_node",
-            name="path_planner_node",
-            output="screen",
-            parameters=[mission_params],
-        )
-        return [perception, planner]
 
     # arena: red no-fly mats on the downward camera; one red mat: confirmed in
     # flight (no hover), red joined to it added in flight

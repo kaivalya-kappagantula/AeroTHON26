@@ -245,7 +245,6 @@ def generate_launch_description():
             "arena_alt_m": _float("alt"),
             "arena_sweep_speed_ms": _float("speed"),
             "require_rc_switch": ParameterValue(LaunchConfiguration("rc_switch"), value_type=bool),
-            "require_avoidance_sensor": False,    # no OAK-D pipeline in this test
             # SITL simulates a 3S pack (12.6 V); on the drone the yaml's value
             "battery_critical_v": ParameterValue(PythonExpression(
                 ["10.5 if '", sim, "' == 'true' else ",

@@ -1,16 +1,14 @@
 # stages.py — start / stop groups of mission nodes phase by phase
 #
-# The Pi 5 browned out (switched off) with every node, the OAK-D and the
-# downward camera powering up at once. mission.launch.py now starts only the
+# The Pi 5 browned out (switched off) with every node and the downward
+# camera powering up at once. mission.launch.py now starts only the
 # light nodes; mission_node starts each group here when its phase needs it,
 # and stops it when the phase no longer does:
 #
 #   ros2 launch mission_bringup mission_stage.launch.py stage:=<name> <launch args>
 #
-#   oak            preflight -> landing   (exit corridor depth, live view, FC proximity)
 #   down_cam       preflight -> landing   (phases 1, 3, 4 + live view)
 #   arena          phase 3 -> exit corridor start point (red_zone_node)
-#   exit_corridor  phase 5 only            (path_planner + corridor_perception)
 #
 # Each stage is its own `ros2 launch` process; its console output goes to
 # <log_dir>/stage_<name>.out. Stopping it = SIGINT to that launch, which
@@ -32,10 +30,8 @@ STOP_TIMEOUT_S = 10.0
 
 # Node names that show a stage is up (mission_stage.launch.py)
 STAGE_NODES = {
-    "oak": ["sector_builder_node", "coverage_guard_node", "oak_container"],
     "down_cam": [],                       # mission_node waits for /down_frame itself
     "arena": ["red_zone_node"],
-    "exit_corridor": ["corridor_perception_node", "path_planner_node"],
 }
 
 
@@ -77,8 +73,6 @@ class Stages:
             if out is not None:
                 out.close()             # the child keeps its own copy
         want = STAGE_NODES.get(stage, [])
-        if "sim:=true" in self.launch_args:            # SITL: no depthai driver
-            want = [n for n in want if n != "oak_container"]
         end = time.time() + timeout
         while True:
             missing = [n for n in want if n not in self.node.get_node_names()]

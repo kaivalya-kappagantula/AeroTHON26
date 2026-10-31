@@ -77,8 +77,7 @@ class PhaseLog:
             f" alt={'?' if alt is None else f'{alt:.2f}'}"
             f" pos={'?' if gps is None else f'{gps[0]:.7f},{gps[1]:.7f}'}{to_end}"
             f" hdg={'?' if n.heading_deg is None else f'{n.heading_deg:.0f}'}"
-            f" batt={'?' if not n.battery_voltage else f'{n.battery_voltage:.2f}V'}"
-            f" oak={int(bool(n._sensor_live))}")
+            f" batt={'?' if not n.battery_voltage else f'{n.battery_voltage:.2f}V'}")
 
     def begin(self, number: int, name: str, start=None, end=None):
         """Close the running phase's file and open this one's. start / end:
