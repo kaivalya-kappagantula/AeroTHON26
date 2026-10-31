@@ -54,10 +54,7 @@
 #   exit end    L (not measured)         R 13.1706093,77.5331163
 /**:
   ros__parameters:
-    # TEST ONLY (2026-10-31): home moved to today's test spot; every other
-    # waypoint is still at the surveyed field ~135 m away. Real value:
-    #   wp_home: [13.1705825, 77.5331628]
-    wp_home: [13.1705102, 77.5319142]           # takeoff spot (drone placed here)
+    wp_home: [13.1705825, 77.5331628]           # takeoff spot (drone placed here)
     wp_qr: [13.1705922, 77.5331422]             # reference QR centre (2.5 m ahead)
     wp_entry_mouth: [13.1705720, 77.5331055]    # entry corridor, home side (green banner)
     wp_entry_end: [13.1706033, 77.5330502]      # entry corridor, arena side
