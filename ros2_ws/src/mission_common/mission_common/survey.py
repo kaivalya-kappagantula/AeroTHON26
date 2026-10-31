@@ -1,33 +1,23 @@
-# survey.py — the course as surveyed with GPS on site (mission_params.yaml,
-# the /** survey_* block): the takeoff spot, the reference QR, and the wall
-# corners of both corridors. Pure Python (no ROS), unit-tested in
-# path_planner/test/test_survey.py.
+# survey.py — the course as HARDCODED mission waypoints (mission_params.yaml,
+# the /** wp_* block, from the 2026-10-30 site survey): the takeoff spot, the
+# reference QR, and each corridor's centreline (mouth and end). Pure Python
+# (no ROS), unit-tested in path_planner/test/test_survey.py.
 #
-# Every point is [lat, lon]; [0, 0] = not measured. Corridor points are named
-# from the drone's point of view WHILE IT FLIES THROUGH that corridor: the
-# entry corridor home -> arena, the exit corridor arena -> home. "mouth" =
-# where the drone goes in (the banner side), "end" = where it comes out.
-#
-# Corridor centreline (fit_corridor): GPS points are ~0.5 m noisy, so a
-# measured pair is rarely exactly the known width apart (site survey: 3.40,
-# 3.55 and 2.97 m for 3.5 m corridors), and a wall corner may be missing. The
-# centreline is the least-squares line through ALL the measured corners with
-# each wall known to lie width / 2 to its side:
-#   - both corners of an end measured -> the centre there is their midpoint
-#   - one corner of an end missing -> the other wall's corner + width / 2
-#   - direction: the mean direction of the walls measured at both ends
-#     (else mouth -> end)
-# Residuals (each corner's distance from the wall it was meant to be on) are
-# returned so the node can log a survey point that is far off.
+# Every point is [lat, lon]; [0, 0] = not set. Corridors are named from the
+# drone's point of view WHILE IT FLIES THROUGH them: the entry corridor
+# home -> arena, the exit corridor arena -> home. "mouth" = where the drone
+# goes in, "end" = where it comes out. The waypoints are the least-squares
+# centrelines (fit_corridor) of the surveyed wall corners, computed once and
+# written into the yaml; fit_corridor stays here to recompute them.
 #
 # Anchoring (Survey.shifted): consumer GPS drifts by a metre or two between
 # the survey and the flight, but much less between two points measured close
-# together in time. With the drone placed ON the surveyed takeoff spot, the
-# difference between its home fix and survey_home is that common error: every
-# surveyed point is shifted by it (survey_anchor_to_home). Placed elsewhere
-# (more than survey_max_home_shift_m off) -> not shifted, logged.
+# together in time. With the drone placed ON wp_home, the difference between
+# its home fix and wp_home is that common error: every waypoint is shifted by
+# it (wp_anchor_to_home). Placed elsewhere (more than wp_max_home_shift_m
+# off) -> not shifted, logged.
 #
-# Frame: metres (east, north) from survey_home; yaw ENU (rad, CCW from East).
+# Frame: metres (east, north) from wp_home; yaw ENU (rad, CCW from East).
 
 import math
 from dataclasses import dataclass, field
@@ -157,8 +147,8 @@ def _mean(xs):
 
 @dataclass
 class Survey:
-    """The surveyed course, in metres (east, north) from survey_home."""
-    home: tuple                         # survey_home (lat, lon)
+    """The surveyed course, in metres (east, north) from wp_home."""
+    home: tuple                         # wp_home (lat, lon)
     qr: tuple = None                    # (east, north) or None
     entry: Corridor = None
     exit: Corridor = None
@@ -178,38 +168,39 @@ class Survey:
                       (self.shift[0] + d_e, self.shift[1] + d_n))
 
 
-def corridor_points(cfg, which):
-    """The four survey_<which>_* corners of cfg as (lat, lon) or None."""
-    return [point(getattr(cfg, f"survey_{which}_{k}"))
-            for k in ("mouth_left", "mouth_right", "end_left", "end_right")]
+def corridor_from_points(mouth, end, width):
+    """Corridor from its centreline waypoints ((east, north) or None)."""
+    if mouth is None or end is None:
+        return None
+    return Corridor(mouth, end, math.atan2(end[1] - mouth[1], end[0] - mouth[0]), width)
 
 
 def load(cfg):
-    """Survey from a MissionConfig, or None if survey_home is not set."""
-    home = point(cfg.survey_home)
+    """Course from a MissionConfig's wp_* waypoints, or None if wp_home is not set."""
+    home = point(cfg.wp_home)
     if home is None:
         return None
-    width = float(cfg.survey_corridor_width_m)
+    width = float(cfg.wp_corridor_width_m)
     loc = lambda p: None if p is None else to_local(p[0], p[1], *home)   # noqa: E731
-    qr = point(cfg.survey_qr)
-    return Survey(home, loc(qr),
-                  fit_corridor(*[loc(p) for p in corridor_points(cfg, "entry")], width),
-                  fit_corridor(*[loc(p) for p in corridor_points(cfg, "exit")], width))
+    wp = lambda name: loc(point(getattr(cfg, f"wp_{name}")))           # noqa: E731
+    return Survey(home, wp("qr"),
+                  corridor_from_points(wp("entry_mouth"), wp("entry_end"), width),
+                  corridor_from_points(wp("exit_mouth"), wp("exit_end"), width))
 
 
 def anchor(survey, home_fix, cfg):
-    """(survey to fly, how it was placed) for the drone's home fix (lat, lon):
-    None if the drone is nowhere near the surveyed field (SITL, another
-    site: survey_max_home_dist_m); shifted onto home_fix when placed on the
-    surveyed spot (survey_anchor_to_home, within survey_max_home_shift_m)."""
+    """(course to fly, how it was placed) for the drone's home fix (lat, lon):
+    None if the drone is nowhere near wp_home (wrong field / wrong yaml:
+    wp_max_home_dist_m); shifted onto home_fix when placed on wp_home
+    (wp_anchor_to_home, within wp_max_home_shift_m)."""
     if survey is None or home_fix is None:
         return None, "no survey"
     e, n = survey.local(*home_fix)
     off = math.hypot(e, n)
-    if off > float(cfg.survey_max_home_dist_m):
-        return None, f"takeoff {off:.0f} m from survey_home — not this field, survey NOT used"
-    if bool(cfg.survey_anchor_to_home) and off <= float(cfg.survey_max_home_shift_m):
-        return survey.shifted(e, n), (f"anchored: every surveyed point moved {off:.2f} m "
+    if off > float(cfg.wp_max_home_dist_m):
+        return None, f"takeoff {off:.0f} m from wp_home — not this field"
+    if bool(cfg.wp_anchor_to_home) and off <= float(cfg.wp_max_home_shift_m):
+        return survey.shifted(e, n), (f"anchored: every waypoint moved {off:.2f} m "
                                       f"(E {e:+.2f}, N {n:+.2f}) onto today's home fix")
-    return survey, (f"takeoff {off:.1f} m from survey_home — surveyed points used as "
-                    "measured (not anchored)")
+    return survey, (f"takeoff {off:.1f} m from wp_home — waypoints used as "
+                    "written (not anchored)")

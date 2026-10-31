@@ -383,20 +383,18 @@ Homing comes next — see Open issues.
 |---|---|---|
 | Takeoff (5 m, hover 10 s, land) | `ros2 launch mission_bringup takeoff_test.launch.py` | add `sim:=true` |
 | Phase 1 (QR) | `ros2 launch mission_bringup qr_scan_mission.launch.py` | add `sim:=true` |
-| Phase 2 (entry corridor) | `ros2 launch mission_bringup entry_corridor.launch.py takeoff_alt:=5` | `ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true mission:=entry_corridor` |
 | Phase 3 (arena, 25 × 25 m) | `ros2 launch mission_bringup arena_search_mission.launch.py` | add `sim:=true` |
 | Phase 4 (drop on a QR 5 m ahead) | `ros2 launch mission_bringup payload_drop_mission.launch.py` | add `sim:=true` |
 | Phases 3 + 4 | `ros2 launch mission_bringup arena_search_mission.launch.py drop:=true` | add `sim:=true start:=corner` |
-| Whole mission | `ros2 launch mission_bringup mission.launch.py launch_mavros:=true launch_camera:=true` | `ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true` |
+| Whole mission (hardcoded waypoints, nodes and logs per phase) | `./fly.sh` | `./fly.sh sim` |
 
-Whole mission, live view + logs: Cam3 at `http://<pi>:8080/`, OAK colour at
+Whole mission, live view + logs: down camera at `http://<pi>:8080/`, OAK colour at
 `http://<pi>:8081/` (watch only; frames are dropped, never queued). Each flight writes
-`~/aerothon_logs/mission_<time>/`: both streams as `.mjpeg` (`ffplay -f mjpeg <file>`)
-and a rosbag of telemetry, MAVROS, perception results and `/rosout` (no images).
-`live_view:=false` / `record:=false` turn them off.
+`~/aerothon_logs/mission_<time>/`: `summary.log`, one `<n>_<phase>.log` per phase
+(every node's messages + a 1 Hz TELEM line) and `stage_<name>.out`.
+`live_view:=false` turns the views off, `record_video:=true` saves them as `.mjpeg`.
 
 What each test does after its phase:
-- **Phase 2 test**: climbs to 10 m after the corridor, hovers 5 s, lands.
 - **Phase 3 test**: the drone takes off at a **corner** of the test area; the area runs
   25 m **ahead along its nose** and 25 m **to its right**. Over the match: hover 5 s, land
   there. It loads the reference from `~/aerothon_captures/reference_qr.json`, so run
@@ -408,23 +406,15 @@ On the real drone, every flight: place it **facing the corridors** (phase 2 only
 ### SITL (simulation on a laptop)
 
 ```bash
-# terminal 1 — the simulated flight controller
-cd ~/ardupilot/Tools/autotest
-python3 sim_vehicle.py -v ArduCopter -f quad --no-mavproxy -w -l 12.9716,77.5946,0,0
-
-# terminal 2
-source ~/AeroTHON26/env.sh
-ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true
+./fly.sh sim
 ```
 
-`sitl_mission.launch.py` simulates the whole world: corridors (competition size),
-the green banner, the OAK-D depth, the downward camera with the reference QR 1 m ahead,
-the arena (30 × 40 m) with 6 QRs and a red mat. Real perception nodes run on the
-simulated images. Move corridor 1 with `c1_ahead_m`, `c1_left_m`, `c1_yaw_deg`.
-`mission:=takeoff|qr_scan|entry_corridor|full` picks the flight. Disturbances:
-`wind_ms`, `wind_dir_deg`, `wind_turb_ms` (ArduPilot SITL wind) and `gps_drift_m`,
-`gps_drift_period_s` (a drifting GPS error); `sitl_corridor_sim` logs the true
-distance from the centreline after each corridor pass.
+starts ArduPilot SITL at `wp_home` (heading 296°, facing the arena) and the whole
+mission with `sim:=true`: the same phases and staged nodes as on the drone, the cameras
+simulated at the real site — both corridors on their waypoints (exit corridor with 3
+obstacles, walls without depth past 3.5 m, 0.3 m GPS drift), the reference QR at
+`wp_qr`, QRs and a red mat inside the real arena. `sitl_corridor_sim` logs the true
+distance from the centreline after each corridor pass (`stage_oak.out`).
 
 Tips: SITL simulates a 3S battery, so the launch files lower `battery_critical_v` in SITL
 only. A cold SITL needs ~30–60 s before it has a position (the takeoff waits).

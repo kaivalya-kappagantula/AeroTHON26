@@ -6,13 +6,20 @@ Pi 5, talking to an ArduPilot (ArduCopter) Pixhawk through MAVROS.
 **New to the project? Start with [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md)** — the
 mission, the architecture, how every phase works and why, testing, and what's open.
 
-| Phase | What it does | Status |
-|---|---|---|
-| 1 | Gradual takeoff to 5 m, find + centre over the reference QR, read it and store it (by its text, or by its picture if it holds none) | SITL ✅, drone not yet |
-| 2 | Entry corridor: descend to 3 m, find the green banner (±90° sweep), line up on the walls under it, fly through, climb to 10 m | SITL ✅, drone not yet |
-| 3 | Arena search: sweep the arena at 10 m (strips sized so a 1 m QR always fits), never over the red mat (stop, confirm, re-plan around it with a 2 m margin), find the QR that matches the reference | SITL ✅, drone not yet |
-| 4 | Payload drop: over the match, straight down to 5 m, centre on the QR with the down camera, release, straight back up to 10 m | SITL ✅, drone not yet |
-| later | Corridor 2, return home | in progress |
+The mission flies **hardcoded GPS waypoints** (`wp_*` in
+`ros2_ws/src/mission_bringup/config/mission_params.yaml`, from the site survey). Every
+phase starts and ends on them; only four parts have logic, the rest are plain waypoints:
+
+| # | Phase (log file) | From -> to | How |
+|---|---|---|---|
+| 0 | `0_preflight` | on the ground | GPS, waypoints checked, OAK-D + down camera up |
+| 1 | `1_takeoff_qr` | `wp_home` (takeoff 5 m) -> `wp_qr` | **logic**: find, centre, read the reference QR |
+| 2 | `2_entry_corridor` | `wp_entry_mouth` -> `wp_entry_end` at 5 m, up to 9.25 m | waypoints (flown over) |
+| 3 | `3_arena_search` | from the entry end | **logic**: BCD sweep around the red mat until the matching QR |
+| 4 | `4_payload_drop` | over the match | **logic**: down to 5 m, centre, release, back up |
+| 5 | `5_exit_corridor` | 6 m in front of `wp_exit_mouth` -> `wp_exit_end` at 1.22 m | **logic**: obstacle avoidance (failure: up to 5 m, home, land) |
+| 6 | `6_home_land` | `wp_exit_end` -> `wp_home` at 5 m | waypoints, land |
+
 ## Quick start
 
 Needs **Ubuntu 24.04 + ROS 2 Jazzy** ([install guide](https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html)).
@@ -31,39 +38,35 @@ Do **not** run the ROS nodes from a Python venv, and do not upgrade OpenCV to 5.
 NumPy to 2.x for the system Python: ROS Jazzy's `cv_bridge` breaks and every camera
 node crashes. `requirements.txt` pins safe versions.
 
-## Run one phase at a time
+## Fly the mission (one command)
 
-Every phase has its own test flight. Each flies exactly the mission's code for that
-phase, then lands.
+```bash
+./fly.sh          # on the drone: MAVROS on /dev/ttyAMA2, OAK-D, down Cam 1.3, all phases, land
+./fly.sh sim      # on a laptop: ArduPilot SITL at wp_home + simulated cameras, same code
+```
 
-| Test | On the drone | In SITL |
-|---|---|---|
-| Takeoff only (climb to 5 m, hover 10 s, land) | `ros2 launch mission_bringup takeoff_test.launch.py` | `ros2 launch mission_bringup takeoff_test.launch.py sim:=true` |
-| Phase 1 (QR) | `ros2 launch mission_bringup qr_scan_mission.launch.py` | `ros2 launch mission_bringup qr_scan_mission.launch.py sim:=true` |
-| Phase 2 (entry corridor) | `ros2 launch mission_bringup entry_corridor.launch.py takeoff_alt:=5` | `ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true mission:=entry_corridor` |
-| Phase 3 (arena search, 25 x 25 m test area) | `ros2 launch mission_bringup arena_search_mission.launch.py` | `ros2 launch mission_bringup arena_search_mission.launch.py sim:=true` |
-| Phase 4 (drop on a QR placed 5 m ahead) | `ros2 launch mission_bringup payload_drop_mission.launch.py` | `ros2 launch mission_bringup payload_drop_mission.launch.py sim:=true` |
-| Phases 3 + 4 (sweep, then the drop on the match) | `ros2 launch mission_bringup arena_search_mission.launch.py drop:=true` | add `sim:=true start:=corner` |
-| Whole mission | `ros2 launch mission_bringup mission.launch.py launch_mavros:=true launch_camera:=true` | `ros2 launch mission_bringup sitl_mission.launch.py launch_mavros:=true` |
+Before the first flight, on the drone with props off: `./tools/pi_check.sh` tests the
+OAK-D and Cam 1.3 feeds and live views, then runs every mission node at once for 2 min
+and checks CPU, RAM, temperature, 5 V supply and throttling (report + snapshots in
+`~/aerothon_logs/pi_check_<time>/`).
 
-On the drone:
-- Place it facing the corridors (the banner search only looks ±90° around where the
-  nose points), with the reference QR at most ~1 m ahead.
-- It sits armed for 5 s before every takeoff. The RC CH7 switch starts the mission
-  where the launch file asks for it; switching CH7 low, or changing flight mode, hands
-  control back to the pilot.
-- Phase 2 climbs to 10 m after the corridor: check the fence ceiling
-  (`FENCE_ALT_MAX`) allows it, and that the sky above the corridor exit is clear.
+Place the drone **on `wp_home`, facing the arena**. More than 30 m from `wp_home` (wrong
+field / yaml), no GPS, no OAK-D or no camera frame -> it refuses to take off.
 
-The stored reference QR ends up in `~/aerothon_captures/reference_qr.json` (+ `.png`
-and a snapshot). The phase 3 test loads it from there, so fly (or bench-run) phase 1
-first. For phase 3 place the drone at a corner of the test area: the area runs ahead
-along its nose and to its right. On competition day put the arena's 4 GPS corners in
-`arena_corners_lat` / `arena_corners_lon` (`mission_params.yaml`).
+- **Nodes per phase**: MAVROS, payload and QR scanner run throughout; OAK-D and down
+  camera from preflight to landing; `red_zone_node` from phase 3 to the exit corridor's
+  start point; `path_planner` + `corridor_perception` in phase 5 only.
+- **Live view** (drone's WiFi): `http://<pi>:8080/` down camera, `http://<pi>:8081/`
+  OAK-D. `./fly.sh record_video:=true` also saves both.
+- **Logs**: `~/aerothon_logs/mission_<time>/` — `summary.log` (one line per phase:
+  result, time), `<n>_<phase>.log` (every node's messages during that phase + a 1 Hz
+  `TELEM` line), `stage_<name>.out` (console of each phase's nodes).
+- SITL needs ArduPilot in `~/ardupilot` (below).
+
+Single-phase test flights still exist (`takeoff_test`, `qr_scan_mission`,
+`arena_search_mission`, `payload_drop_mission` launch files, `sim:=true` for SITL).
 
 ## SITL (laptop)
-
-SITL needs ArduPilot built separately (it is too big to live in this repo):
 
 ```bash
 git clone --recurse-submodules https://github.com/ArduPilot/ardupilot.git ~/ardupilot
@@ -71,17 +74,7 @@ cd ~/ardupilot && Tools/environment_install/install-prereqs-ubuntu.sh -y
 . ~/.profile && ./waf configure --board sitl && ./waf copter
 ```
 
-Then start the simulator in one terminal:
-
-```bash
-cd ~/ardupilot/Tools/autotest
-python3 sim_vehicle.py -v ArduCopter -f quad --no-mavproxy -w -l 12.9716,77.5946,0,0
-```
-
-and a test from the table above in another (after `source ~/AeroTHON26/env.sh`).
-`sitl_mission.launch.py` simulates the depth camera, the corridors and the green banner.
-Move corridor 1 to match a test field with `c1_ahead_m`, `c1_left_m` and `c1_yaw_deg`
-(entrance distance ahead / to the left of the takeoff point, and corridor angle).
+then `./fly.sh sim`.
 
 ## Tests
 

@@ -1,4 +1,4 @@
-# Site survey (mission_common/survey.py) and the banner seen from a surveyed
+# Mission waypoints (mission_common/survey.py) and the banner seen from a surveyed
 # line-up point (entry_corridor.banner_on_survey). Points: the 2026-10-30
 # site survey.
 import math
@@ -10,17 +10,19 @@ from mission_common import survey as sv
 from path_planner.entry_corridor import banner_on_survey
 
 W = 3.5052
+# mission_params.yaml /** wp_* block (hardcoded from the 2026-10-30 survey)
 SITE = dict(
-    survey_home=[13.1705825, 77.5331628], survey_qr=[13.1705922, 77.5331422],
-    survey_entry_mouth_left=[13.1705569, 77.5331022],
-    survey_entry_mouth_right=[13.1705868, 77.5331086],
-    survey_entry_end_left=[13.1705879, 77.5330467],
-    survey_entry_end_right=[13.1706190, 77.5330538],
-    survey_exit_mouth_left=[13.1706634, 77.5330672],
-    survey_exit_mouth_right=[13.1706380, 77.5330589],
-    survey_exit_end_left=[0.0, 0.0], survey_exit_end_right=[13.1706093, 77.5331163],
-    survey_corridor_width_m=W, survey_max_home_dist_m=100.0,
-    survey_anchor_to_home=True, survey_max_home_shift_m=3.0)
+    wp_home=[13.1705825, 77.5331628], wp_qr=[13.1705922, 77.5331422],
+    wp_entry_mouth=[13.1705720, 77.5331055], wp_entry_end=[13.1706033, 77.5330502],
+    wp_exit_mouth=[13.1706506, 77.5330630], wp_exit_end=[13.1706235, 77.5331238],
+    wp_corridor_width_m=W, wp_max_home_dist_m=30.0,
+    wp_anchor_to_home=True, wp_max_home_shift_m=3.0)
+# the surveyed wall corners the wp_* centrelines were fitted from
+CORNERS = dict(
+    entry=([13.1705569, 77.5331022], [13.1705868, 77.5331086],
+           [13.1705879, 77.5330467], [13.1706190, 77.5330538]),
+    exit=([13.1706634, 77.5330672], [13.1706380, 77.5330589],
+          None, [13.1706093, 77.5331163]))
 
 
 def cfg(**kw):
@@ -67,8 +69,6 @@ def test_site_survey_geometry():
     assert s.entry.length == pytest.approx(6.94, abs=0.1)
     assert bearing(s.exit) == pytest.approx(115.0, abs=3.0)
     assert 6.5 < s.exit.length < 7.5
-    assert max(abs(r) for r in s.entry.residuals.values()) < 0.2
-    assert max(abs(r) for r in s.exit.residuals.values()) < 0.35
     # the QR is ~2.5 m ahead of the takeoff spot
     assert math.hypot(*s.qr) == pytest.approx(2.48, abs=0.05)
     # takeoff / QR -> entry line-up point: in front of the entry corridor,
@@ -83,6 +83,17 @@ def test_site_survey_geometry():
     assert not s.entry.crosses(s.exit.world(-6.0), s.exit.world(-2.5), 0.5)
     # the corridors stand side by side, not overlapping
     assert abs(s.entry.frame(s.exit.end)[1]) > W
+
+
+def test_waypoints_are_the_fitted_survey_centrelines():
+    s = sv.load(cfg())
+    for name in ("entry", "exit"):
+        corners = [None if p is None else s.local(*p) for p in CORNERS[name]]
+        fit = sv.fit_corridor(*corners, W)
+        c = getattr(s, name)
+        assert c.mouth == pytest.approx(fit.mouth, abs=0.02)
+        assert c.end == pytest.approx(fit.end, abs=0.02)
+        assert max(abs(r) for r in fit.residuals.values()) < 0.35
 
 
 def test_crosses():
@@ -101,13 +112,13 @@ def test_anchor():
     a, how = sv.anchor(s, near, cfg())
     assert a.shift == pytest.approx((1.0, -0.5), abs=1e-3) and "anchored" in how
     assert a.entry.mouth[0] == pytest.approx(s.entry.mouth[0] + 1.0, abs=1e-3)
-    a, _ = sv.anchor(s, near, cfg(survey_anchor_to_home=False))
+    a, _ = sv.anchor(s, near, cfg(wp_anchor_to_home=False))
     assert a.shift == (0.0, 0.0)
     a, how = sv.anchor(s, sv.to_gps(10.0, 0.0, *home), cfg())   # placed elsewhere
     assert a.shift == (0.0, 0.0) and "not anchored" in how
     a, how = sv.anchor(s, (12.9716, 77.5946), cfg())            # SITL: another city
-    assert a is None and "NOT used" in how
-    assert sv.load(cfg(survey_home=[0.0, 0.0])) is None
+    assert a is None and "not this field" in how
+    assert sv.load(cfg(wp_home=[0.0, 0.0])) is None
 
 
 def _banner(bearing, elev, cam_yaw=float("nan")):

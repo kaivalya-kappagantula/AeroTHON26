@@ -1,0 +1,6 @@
+# sitl_relays.parm — SITL only (fly.sh sim): both payload winch relays as on
+# the drone (RELAY1/2_FUNCTION 1), so payload_node's DO_SET_RELAY works.
+RELAY1_FUNCTION 1
+RELAY1_PIN 13
+RELAY2_FUNCTION 1
+RELAY2_PIN 14

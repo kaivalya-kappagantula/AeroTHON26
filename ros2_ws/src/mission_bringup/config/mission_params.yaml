@@ -1,21 +1,28 @@
 # mission_params.yaml — Central configuration for Mission 2
 #
 # ╔═══════════════════════════════════════════════════════════════════╗
-# ║  UPDATE ON COMPETITION DAY:                                       ║
-# ║    - the /** survey_* block below (takeoff spot, reference QR,    ║
-# ║      both corridors' wall corners), measured on site             ║
-# ║    - mission_node arena_corners_lat / _lon (the arena's 4 GPS     ║
-# ║      corners, in order around it). Left all zero, the full        ║
-# ║      mission refuses to take off (require_arena_corners).         ║
-# ║  The red mat is still found in flight. A corridor with no survey  ║
-# ║  is found by its banner (green entry, blue exit) as before.       ║
+# ║  The mission flies HARDCODED WAYPOINTS (the /** wp_* block below, ║
+# ║  from the 2026-10-30 site survey) + the arena's 4 GPS corners     ║
+# ║  (mission_node arena_corners_lat / _lon). Every phase begins and  ║
+# ║  ends on them. Place the drone ON wp_home, facing the arena.      ║
+# ║  Takeoff further than wp_max_home_dist_m from wp_home = wrong     ║
+# ║  field / yaml: the mission refuses to take off.                   ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 #
-# Legacy / SITL only (NOT used by the full mission): path_planner_node
-# origin_lat/lon, corridor1_/corridor2_waypoints_x/y and red_zone_N_x/_y
-# (the old surveyed-corridor legs, fly_corridor_1/2, and the lawnmower),
-# sitl_qr_simulator, sitl_corridor_sim. Local frame for those *_x / *_y
-# lists: metres ENU about (origin_lat, origin_lon), x = East, y = North.
+# Phases (mission_manager/mission_node.py), from -> to:
+#   0 preflight       on the ground: GPS, waypoints, OAK-D + down camera up
+#   1 takeoff_qr      wp_home (takeoff to 5 m) -> wp_qr; find, centre, read the QR
+#   2 entry_corridor  wp_entry_mouth -> wp_entry_end at 5 m (OVER the corridor),
+#                     then straight up to 9.25 m                     [waypoints]
+#   3 arena_search    BCD sweep around the red mat until the matching QR
+#   4 payload_drop    over the QR, down to 5 m, centre, release, back up
+#   5 exit_corridor   exit start (exit_search_standoff_m in front of
+#                     wp_exit_mouth, around red at 9.25 m) -> down to 1.22 m
+#                     -> through to wp_exit_end, past the obstacles
+#   6 home_land       straight up to 5 m -> wp_home -> land          [waypoints]
+#
+# Legacy / SITL only (NOT used by the mission): path_planner_node
+# origin_lat/lon, corridor1_/corridor2_waypoints_x/y and red_zone_N_x/_y.
 #
 # FC-side settings this stack relies on (set in Mission Planner):
 #   BATT_LOW_VOLT 14.0 / BATT_CRT_VOLT 13.6, BATT_FS_LOW_ACT, BATT_FS_CRT_ACT
@@ -24,50 +31,47 @@
 #   (FC-side RTL must clear the 2.44 m corridor walls)
 #   PRX1_TYPE 2, AVOID_* (obstacle_avoidance/params/stage5_6_corridor.param),
 #   OA_TYPE 0 and GUID_OPTIONS 0 (plain position control in GUIDED; the
-#   corridors are flown by path_planner, not BendyRuler), payload winch on relays:
+#   exit corridor is flown by path_planner, not BendyRuler), payload winch on relays:
 #   RELAY1_PIN 50 / RELAY2_PIN 51, RELAY1/2_FUNCTION 1 (Relay), RELAY1/2_DEFAULT 0,
 #   SERVO9/10_FUNCTION -1 (GPIO). RC7 is NOT used: the mission starts on launch.
 
-# ─── Site survey (all nodes; mission_common/survey.py) ─────────────
-# [lat, lon]; [0.0, 0.0] = not measured. Corridor corners are named from the
-# drone's view while it flies THROUGH that corridor (entry: home -> arena,
-# exit: arena -> home); mouth = where it goes in (the banner side).
-# Used only when the drone takes off within survey_max_home_dist_m of
-# survey_home (SITL / other sites: off). Placed on survey_home (within
-# survey_max_home_shift_m): every surveyed point, the arena corners too, is
-# shifted by today's home fix - survey_home (GPS error common to both).
-# Centrelines are least-squares fits through all corners with the known
-# width (pairs measured 3.40 / 3.55 / 2.97 m apart: GPS scatter): the mission
-# log prints each corridor's length, heading and each corner's residual.
-# Site survey 2026-10-30, drone placed facing the arena (heading ~296 deg):
-#   entry corridor 6.94 m, heading 300 deg; exit corridor 7.25 m, 115 deg.
+# ─── MISSION WAYPOINTS (all nodes; mission_common/survey.py) ───────
+# [lat, lon]. Corridors are named from the drone's view while it flies
+# THROUGH them (entry: home -> arena, exit: arena -> home); mouth = where it
+# goes in. The corridor waypoints are the least-squares centrelines of the
+# surveyed wall corners (path_planner/test/test_survey.py checks they still
+# match): entry corridor 6.93 m long, heading 300 deg; exit 7.25 m, 115 deg.
+# Placed within wp_max_home_shift_m of wp_home, every waypoint (the arena
+# corners too) is shifted by today's home fix - wp_home (GPS error common to
+# both); further off, used as written.
+# Surveyed corners they came from (2026-10-30), for the record:
+#   entry mouth L 13.1705569,77.5331022  R 13.1705868,77.5331086
+#   entry end   L 13.1705879,77.5330467  R 13.1706190,77.5330538
+#   exit mouth  L 13.1706634,77.5330672  R 13.1706380,77.5330589
+#   exit end    L (not measured)         R 13.1706093,77.5331163
 /**:
   ros__parameters:
-    survey_home: [13.1705825, 77.5331628]       # drone's takeoff spot
-    survey_qr: [13.1705922, 77.5331422]         # reference QR centre (2.5 m ahead)
-    survey_entry_mouth_left: [13.1705569, 77.5331022]   # green banner side
-    survey_entry_mouth_right: [13.1705868, 77.5331086]
-    survey_entry_end_left: [13.1705879, 77.5330467]     # arena side
-    survey_entry_end_right: [13.1706190, 77.5330538]
-    survey_exit_mouth_left: [13.1706634, 77.5330672]    # blue banner, arena side
-    survey_exit_mouth_right: [13.1706380, 77.5330589]
-    survey_exit_end_left: [0.0, 0.0]                    # not measured: right wall + width
-    survey_exit_end_right: [13.1706093, 77.5331163]     # home side
-    survey_corridor_width_m: 3.5052     # 11.5 ft: rebuilds a missing / off corner
-    survey_max_home_dist_m: 100.0       # takeoff further from survey_home: survey off
-    survey_anchor_to_home: true
-    survey_max_home_shift_m: 3.0        # placed further off survey_home: not shifted
+    wp_home: [13.1705825, 77.5331628]           # takeoff spot (drone placed here)
+    wp_qr: [13.1705922, 77.5331422]             # reference QR centre (2.5 m ahead)
+    wp_entry_mouth: [13.1705720, 77.5331055]    # entry corridor, home side (green banner)
+    wp_entry_end: [13.1706033, 77.5330502]      # entry corridor, arena side
+    wp_exit_mouth: [13.1706506, 77.5330630]     # exit corridor, arena side (blue banner)
+    wp_exit_end: [13.1706235, 77.5331238]       # exit corridor, home side
+    wp_corridor_width_m: 3.5052     # 11.5 ft
+    wp_max_home_dist_m: 30.0        # takeoff further from wp_home: no takeoff
+    wp_anchor_to_home: true
+    wp_max_home_shift_m: 3.0        # placed further off wp_home: not shifted
 
 # ─── Mission Node ─────────────────────────────────────────────────
 mission_node:
   ros__parameters:
     # Altitudes (m above home). Hard cap 9.5 m everywhere (mavros_utils.MAX_ALT_M;
     # config_loader refuses a value above it):
-    #   takeoff + reference QR 5 m -> entry corridor flown OVER at 5 m (surveyed;
-    #   unsurveyed: through it at 1.22 m) to the midpoint of its exit corners
-    #   -> straight up to 9.25 m there, arena sweep from that spot -> drop
-    #   down to 5 m and back up to 9.25 m -> exit corridor 1.22 m (half the
-    #   8 ft walls, never above 8 ft except the exit failsafe) -> home 5 m
+    #   takeoff + reference QR 5 m -> entry corridor flown OVER at 5 m
+    #   (wp_entry_mouth -> wp_entry_end) -> straight up to 9.25 m there, arena
+    #   sweep from that spot -> drop down to 5 m and back up to 9.25 m -> exit
+    #   corridor 1.22 m (half the 8 ft walls, never above 8 ft except the exit
+    #   failsafe) -> home 5 m
     drop_altitude_m: 5.0
     cruise_altitude_m: 5.0          # takeoff altitude
     # Speeds per phase (m/s):
@@ -88,9 +92,6 @@ mission_node:
     arm_timeout_s: 90.0
     land_timeout_s: 120.0
     corridor_timeout_s: 120.0
-    entry_corridor_timeout_s: 600.0   # whole entry corridor leg (mission_node
-                                      # and entry_corridor_mission): search +
-                                      # approach + corridor
     lawnmower_timeout_s: 600.0
     stream_rate_hz: 10.0
     # Start gate: OFF — the mission starts as soon as it is launched (GPS,
@@ -99,9 +100,9 @@ mission_node:
     require_rc_switch: false
     rc_auto_channel: 7
     rc_auto_pwm_thresh: 1700
-    # Reference QR, read in the air at cruise_altitude_m over the launch
-    # point (mission_manager/reference_qr.py). Not read -> the mission
-    # carries on with no target (no arena search, payload kept).
+    # Reference QR, read in the air at cruise_altitude_m over wp_qr
+    # (mission_manager/reference_qr.py). Not read -> the mission carries on
+    # with no target (the payload goes on a random QR seen in the sweep).
     qr_scan_attempts: 3
     qr_scan_timeout_s: 60.0
     allow_qr_fallback: false            # SITL only: fly with qr_fallback_id
@@ -130,24 +131,20 @@ mission_node:
     takeoff_max_ground_drift_m: 0.8
     takeoff_liftoff_alt_m: 0.5
     takeoff_climb_rate_ms: 0.5
-    # Before each banner search (entry: after the reference QR; exit: over
-    # the search point): straight down to this — the middle of the 8 ft
-    # corridor walls.
+    # Exit corridor start point: straight down to this — the middle of the
+    # 8 ft corridor walls.
     corridor_start_alt_m: 1.2192
-    # Phase 2, surveyed entry corridor: from the reference QR, over the
-    # corridor at cruise_altitude_m — to its mouth centre, then the midpoint
-    # of survey_entry_end_left / _right — nose down the corridor.
+    # Phase 2, entry corridor: from the reference QR, over the corridor at
+    # cruise_altitude_m to wp_entry_mouth, then wp_entry_end, nose down it.
     entry_overfly_speed_ms: 0.7
     entry_overfly_tolerance_m: 0.7      # GPS noise ~1 m
     # Phase 2 end: climb straight up to this there; the arena sweep starts
     # from that spot (strip nearest it first).
     post_entry_alt_m: 9.25          # arena altitude (9-9.5 m, cap 9.5)
-    # Phase 3, arena search (mission_manager/arena_search.py). COMPETITION
-    # DAY: the arena's 4 GPS corners, in order around it. All zero = use
-    # the arena_width_m x arena_height_m rectangle at origin_lat/lon.
-    # Site survey 2026-10-30, from the drone's view facing the arena:
-    # top left, top right, bottom right, bottom left (~23 x 17.5 m).
-    # Shifted with the survey when anchored (/** block above).
+    # Phase 3, arena search (mission_manager/arena_search.py): the arena's 4
+    # GPS corners, in order around it. Site survey 2026-10-30, from the
+    # drone's view facing the arena: top left, top right, bottom right,
+    # bottom left (~23 x 17.5 m). All zero -> no takeoff.
     arena_corners_lat: [13.1705518, 13.1707511, 13.1707029, 13.1705055]
     arena_corners_lon: [77.5328589, 77.5329181, 77.5330758, 77.5330117]
     arena_alt_m: 9.25               # 9-9.5 m band (cap 9.5)
@@ -158,7 +155,6 @@ mission_node:
     arena_match_passes: 2             # fly over the match + scan again, up to this often
     arena_match_tol_m: 1.0
     arena_rescan_timeout_s: 15.0
-    require_arena_corners: true       # NEW: corners all zero -> no takeoff (full mission)
     # Mission clock (NEW), from lift-off: the arena sweep ends early so the
     # drop and the exit corridor + home + landing still fit in the limit.
     mission_time_limit_s: 900.0       # 15 min
@@ -166,18 +162,12 @@ mission_node:
     mission_exit_reserve_s: 300.0     # phase 5 + home + land (cross the arena at 0.5 m/s,
                                       # banner search, corridor, home). TUNE from SITL /
                                       # flight logs: the CLOCK lines give each phase's time
-    # Phase 5, exit corridor (path_planner/exit_corridor.py): corridor 1's far
-    # end mirrored across the line through the takeoff point = the exit
-    # corridor's arena-side entrance (blue banner). Flown to at arena_alt_m
-    # around the red zones, then down to corridor_start_alt_m facing back
-    # down the corridors and a +-90 deg banner search. Not found -> shifted
-    # this far sideways each way (away from corridor 1 first); then the exit
-    # corridor failsafe (exit_failsafe_alt_m).
-    exit_search_standoff_m: 6.0       # search this far out in the arena from it
-                                      # (surveyed exit: this far in front of its mouth,
-                                      # then path_planner lines up 2.5 m out)
-    exit_search_shift_m: 3.0          # 0 = only the predicted point
-    exit_corridor_timeout_s: 600.0    # mission_node's wait per exit corridor leg
+    # Phase 5, exit corridor: its start point is this far in front of
+    # wp_exit_mouth (in the arena), flown to at arena_alt_m around the red
+    # zones; then down to corridor_start_alt_m facing down the corridor and
+    # path_planner lines up 2.5 m out (entry_preentry_m) and flies through.
+    exit_search_standoff_m: 6.0
+    exit_corridor_timeout_s: 600.0    # mission_node's wait for the exit corridor leg
     # EXIT CORRIDOR FAILSAFE (only there): any exit corridor failure -> climb
     # straight up to this (above the 2.44 m walls), fly home at it, land.
     # Fully autonomous; near the mouth path_planner first backs out from
@@ -196,12 +186,15 @@ mission_node:
     drop_release_timeout_s: 60.0      # > payload_node winch_unwind_s + jerks + ~30 (retries)
     # Battery (4S under load). Companion only stops the mission; the FC acts.
     battery_critical_v: 13.6
-    # Obstacle sensor health (obstacle_avoidance coverage_guard)
+    # Obstacle sensor (OAK-D, coverage_guard): must be live before takeoff;
+    # in flight only the exit corridor needs it (path_planner: dead longer
+    # than sensor_fail_timeout_s there -> exit corridor failsafe).
     require_avoidance_sensor: true
     sensor_preflight_timeout_s: 30.0  # counted after the OAK stage is up
     sensor_fail_timeout_s: 10.0
-    # Staged start: mission.launch.py sets staged_launch true + stage_launch_args;
-    # the OAK, downward camera and each phase's nodes start only when needed.
+    # Staged start: mission.launch.py sets staged_launch, stage_launch_args and
+    # log_dir; the OAK, downward camera and each phase's nodes start only when
+    # needed (mission_manager/stages.py).
     stage_up_timeout_s: 30.0          # a stage's nodes must appear in this
     down_cam_up_timeout_s: 20.0       # no /down_frame in this -> warn, fly on
 

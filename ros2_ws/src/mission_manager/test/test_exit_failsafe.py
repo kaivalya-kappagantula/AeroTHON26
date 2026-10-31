@@ -19,13 +19,15 @@ class Log:
     warn = error = info
 
 
-def fake(reason, climb_ok=True, arena_flown=False, route_home=True):
+def fake(reason, climb_ok=True, arena_flown=False, route_home=True, red_watch=None):
     """A MissionNode with every flight call recorded; _fly_exit_corridor
     returns `reason` (None = through), or raises it if it is an exception.
-    arena_flown: the arena frame exists (home is then routed around red)."""
+    arena_flown: the arena frame exists. red_watch: red_zone_node still up
+    (default: arena_flown) — both -> home is routed around red."""
     n = object.__new__(MissionNode)
     n.cfg, n.home, n.rel_alt, n.gps = CFG, HOME, 1.2, (12.9717, 77.5946)
     n.heading_deg, n.mission_t0 = 90.0, None
+    n._red_watch = arena_flown if red_watch is None else red_watch
     n.sm = MissionSM()
     for ev in ["auto_activate", "airborne", "qr_scanned", "entry_complete", "search_exhausted"]:
         n.sm.send(ev)
@@ -65,7 +67,8 @@ def test_through_runs_no_failsafe():
 
 @pytest.mark.parametrize("reason", ["BLOCKED t at s=3.7 m", "SENSOR_TIMEOUT t at s=2.0 m",
                                     "LEG_TIMEOUT t", "no response from path_planner",
-                                    "blue banner not found at any search point"])
+                                    "no route to the exit corridor start point clear of "
+                                    "the red zones"])
 def test_any_failure_climbs_above_the_walls_then_home_then_lands(reason):
     n = fake(reason)
     assert n._exit_corridor_phase() is False
@@ -85,7 +88,14 @@ def test_arena_flown_goes_home_around_the_red_zones():
     n = fake("BLOCKED t", arena_flown=True)
     assert n._exit_corridor_phase() is False
     assert n.calls == ["stop", ("climb", 5.0), ("arena_go_to", HOME), "land"]
-    assert n._sensor_check is False          # OAK-D not needed above the walls
+
+
+def test_past_the_exit_start_point_goes_straight_home():
+    # red_zone_node stopped at the exit corridor's start point: the drone is
+    # at / in the corridor, home is away from the arena
+    n = fake("BLOCKED t", arena_flown=True, red_watch=False)
+    assert n._exit_corridor_phase() is False
+    assert n.calls == ["stop", ("climb", 5.0), ("goto", HOME, 5.0), "land"]
 
 
 def test_no_route_home_clear_of_red_lands_in_place():

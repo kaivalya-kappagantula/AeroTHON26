@@ -6,7 +6,7 @@
 # mission does. The caller is a MissionNode that has already taken off to
 # cruise_altitude_m over the launch point.
 #
-#   0. EXPECT: the QR lies at survey_qr (site survey, anchored on today's
+#   0. EXPECT: the QR lies at wp_qr (mission waypoint, anchored on today's
 #      home fix — mission_common/survey.py), else ~qr_initial_advance_m
 #      (1 m) straight ahead of the takeoff point, along the heading the
 #      drone was placed with. That spot is sent to qr_scanner_node (/qr_scanner/locate_hint): it uses
@@ -245,7 +245,7 @@ class ReferenceQr:
     # -------------------------------------------------------------------
 
     def _surveyed_spot(self):
-        """(lat, lon) of survey_qr (anchored), or None without a survey."""
+        """(lat, lon) of wp_qr (anchored), or None without a survey."""
         survey = getattr(self.node, "survey", None)
         if survey is None or survey.qr is None:
             return None

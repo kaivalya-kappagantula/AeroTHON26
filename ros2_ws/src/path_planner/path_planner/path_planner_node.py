@@ -657,9 +657,14 @@ class PathPlannerNode(Node):
         if not self._c_need_perception:
             return False, f"CONFIG {leg}: needs corridor perception (require_corridor_perception)"
         self._banner_colour = colour
+        surveyed = None if self._survey is None else \
+            getattr(self._survey, "entry" if colour == "green" else "exit")
         topic = banner_msg.TOPIC_GREEN if colour == "green" else banner_msg.TOPIC_BLUE
+        # Waypoint (surveyed) corridors are flown on their centreline: the
+        # banner only corrects it if a banner_node happens to run (the
+        # mission does not start one).
         deadline = time.time() + 5.0
-        while self._banner is None or time.time() - self._banner[1] > 1.0:
+        while surveyed is None and (self._banner is None or time.time() - self._banner[1] > 1.0):
             if self._cancel.is_set() or time.time() > deadline:
                 return False, (f"NO_BANNER_FEED {leg}: no {topic} — is the {colour} banner_node "
                                "running and the OAK colour stream on (i_pipeline_type RGBD)?")
@@ -668,8 +673,6 @@ class PathPlannerNode(Node):
         speed = self._c_exit_speed if obstacles else self._c_speed
         self._set_speed(speed, alt0)
 
-        surveyed = None if self._survey is None else \
-            getattr(self._survey, "entry" if colour == "green" else "exit")
         if surveyed is not None:
             ok, msg, nominal, track, entry = self._surveyed_approach(leg, surveyed)
             if not ok:
@@ -893,7 +896,8 @@ class PathPlannerNode(Node):
 
         # --- the banner, straight ahead under the survey ---
         lats, heights, frame_t = [], [], None
-        look_end = time.time() + self._sv_wait
+        no_feed = self._banner is None          # no banner_node (the mission runs none)
+        look_end = time.time() + (0.0 if no_feed else self._sv_wait)
 
         def looked():
             nonlocal frame_t
@@ -928,6 +932,9 @@ class PathPlannerNode(Node):
                     f"[path_planner] {leg}: {colour} banner seen {yb:+.2f} m off the surveyed "
                     f"line (> {self._sv_max_shift:.1f} m: not this corridor's?) — ignored, "
                     "entering on the surveyed line")
+        elif no_feed:
+            self.get_logger().info(
+                f"[path_planner] {leg}: no banner node — entering on the waypoint centreline")
         else:
             self.get_logger().warn(
                 f"[path_planner] {leg}: {colour} banner NOT seen ({len(lats)} frames in "

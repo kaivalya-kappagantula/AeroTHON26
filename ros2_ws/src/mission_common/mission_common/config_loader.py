@@ -149,9 +149,6 @@ def load_mission_config(node) -> MissionConfig:
     cfg.arena_match_passes    = _declare(node, "arena_match_passes", 2)     # fly over + rescan
     cfg.arena_match_tol_m     = _declare(node, "arena_match_tol_m", 1.0)    # match this close = over it
     cfg.arena_rescan_timeout_s = _declare(node, "arena_rescan_timeout_s", 15.0)
-    # Competition day: corners all zero -> the full mission refuses to take
-    # off (the placeholder rectangle at origin_lat/lon is for tests only).
-    cfg.require_arena_corners = _declare(node, "require_arena_corners", True)
 
     # ── Mission clock (mission_node) ─────────────────────────────
     # Runs from lift-off. The arena sweep ends early so that, after it,
@@ -161,15 +158,10 @@ def load_mission_config(node) -> MissionConfig:
     cfg.mission_drop_reserve_s = _declare(node, "mission_drop_reserve_s", 90.0)
     cfg.mission_exit_reserve_s = _declare(node, "mission_exit_reserve_s", 300.0)
 
-    # ── Exit corridor, phase 5 (path_planner/exit_corridor.py) ───
-    # Corridor 1's far end mirrored across the line through the takeoff
-    # point = the exit corridor's arena-side entrance; the blue banner is
-    # searched for from exit_search_standoff_m further out in the arena.
-    # Not found -> the point shifted exit_search_shift_m each way along the
-    # corridor entrances (0 = no shifted searches); still not -> the exit
-    # corridor failsafe (below).
+    # ── Exit corridor, phase 5 ───────────────────────────────────
+    # Phase 5 begins exit_search_standoff_m in front of wp_exit_mouth (in the
+    # arena), reached at arena_alt_m around the red zones.
     cfg.exit_search_standoff_m  = _declare(node, "exit_search_standoff_m", 6.0)
-    cfg.exit_search_shift_m     = _declare(node, "exit_search_shift_m", 3.0)
     cfg.exit_corridor_timeout_s = _declare(node, "exit_corridor_timeout_s", 600.0)
     # Exit corridor failsafe (ONLY the exit corridor): straight up to this,
     # home, land. Must clear the corridor walls (8 ft = 2.44 m) with margin.
@@ -186,24 +178,17 @@ def load_mission_config(node) -> MissionConfig:
             raise ValueError(f"{name} {getattr(cfg, name)} m is above the "
                              f"{MAX_ALT_M} m altitude cap")
 
-    # ── Site survey (mission_common/survey.py; yaml /** block) ───
-    # [lat, lon] points measured on site; [0, 0] = not measured. Corridor
-    # corners are named from the drone's view while flying THROUGH that
-    # corridor (entry: home -> arena, exit: arena -> home); mouth = the
-    # banner side. With survey_home set and the drone taking off within
-    # survey_max_home_dist_m of it: phase 1 expects the QR at survey_qr, and
-    # both corridors are flown on their surveyed centrelines (banner seen:
-    # it corrects the line; not seen: in anyway).
-    cfg.survey_home            = _declare(node, "survey_home", [0.0, 0.0])
-    cfg.survey_qr              = _declare(node, "survey_qr", [0.0, 0.0])
-    for which in ("entry", "exit"):
-        for k in ("mouth_left", "mouth_right", "end_left", "end_right"):
-            setattr(cfg, f"survey_{which}_{k}",
-                    _declare(node, f"survey_{which}_{k}", [0.0, 0.0]))
-    cfg.survey_corridor_width_m = _declare(node, "survey_corridor_width_m", 3.5052)
-    cfg.survey_max_home_dist_m  = _declare(node, "survey_max_home_dist_m", 100.0)
-    cfg.survey_anchor_to_home   = _declare(node, "survey_anchor_to_home", True)
-    cfg.survey_max_home_shift_m = _declare(node, "survey_max_home_shift_m", 3.0)
+    # ── Mission waypoints (mission_common/survey.py; yaml /** block) ──
+    # [lat, lon], hardcoded from the site survey; [0, 0] = not set. Every
+    # phase begins and ends on these. Corridors are named from the drone's
+    # view while flying THROUGH them (entry: home -> arena, exit: arena ->
+    # home); mouth = where it goes in.
+    for name in ("home", "qr", "entry_mouth", "entry_end", "exit_mouth", "exit_end"):
+        setattr(cfg, f"wp_{name}", _declare(node, f"wp_{name}", [0.0, 0.0]))
+    cfg.wp_corridor_width_m = _declare(node, "wp_corridor_width_m", 3.5052)
+    cfg.wp_max_home_dist_m  = _declare(node, "wp_max_home_dist_m", 30.0)
+    cfg.wp_anchor_to_home   = _declare(node, "wp_anchor_to_home", True)
+    cfg.wp_max_home_shift_m = _declare(node, "wp_max_home_shift_m", 3.0)
 
     # ── Payload drop ─────────────────────────────────────────────
     cfg.drop_arrival_tolerance_m = _declare(node, "drop_arrival_tolerance_m", 1.0)
@@ -230,6 +215,8 @@ def load_mission_config(node) -> MissionConfig:
     # camera and each phase's nodes only when needed. False: all already up.
     cfg.staged_launch         = _declare(node, "staged_launch", False)
     cfg.stage_launch_args     = _declare(node, "stage_launch_args", "")
+    # Per-phase text logs (mission_manager/phase_log.py); "" = none
+    cfg.log_dir               = _declare(node, "log_dir", "")
     cfg.stage_up_timeout_s    = _declare(node, "stage_up_timeout_s", 30.0)
     cfg.down_cam_up_timeout_s = _declare(node, "down_cam_up_timeout_s", 20.0)
     cfg.coverage_backoff_after_s  = _declare(node, "coverage_backoff_after_s", 3.0)
@@ -237,9 +224,6 @@ def load_mission_config(node) -> MissionConfig:
 
     # ── Path Planner Specific ────────────────────────────────────
     cfg.corridor_timeout_s          = _declare(node, "corridor_timeout_s", 120.0)
-    # mission_node's wait for the whole entry corridor leg (search + approach
-    # + corridor); the planner enforces each part's own deadline.
-    cfg.entry_corridor_timeout_s    = _declare(node, "entry_corridor_timeout_s", 600.0)
     cfg.lawnmower_timeout_s        = _declare(node, "lawnmower_timeout_s", 600.0)
     cfg.mavros_arrival_tolerance_m  = _declare(node, "mavros_arrival_tolerance_m", 2.0)
     cfg.red_zone_buffer_m           = _declare(node, "red_zone_buffer_m", 0.5)
